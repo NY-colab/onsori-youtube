@@ -1,0 +1,45 @@
+import {normalizeSettings,parseDocument,subtitleFile} from './core.js';
+const $=id=>document.getElementById(id),fields=['autoAnalyze','enabled','showSpeech','showSound','showMusic','infoLevel','effectStrength','baseSize','offset'];let current=null,operation={phase:'idle'},validTab=false,optionsLoaded=false,serverReady=false,currentVideoId=null,currentTabId=null,pending=false,refreshSequence=0;
+const embedded=new URLSearchParams(location.search).get('view')==='panel'&&window.parent!==window;
+if(embedded){
+  document.documentElement.dataset.view='panel';
+  $('collapsePanel').hidden=false;
+  $('captureHint').textContent='재생 중인 영상을 자동 분석합니다. URL 분석이 어려우면 탭 녹음으로 이어집니다. 첫 녹음 연결에는 도구 모음의 온소리 아이콘을 한 번 눌러 주세요.';
+  // Chrome strips the referrer on web-accessible extension frames.
+  const parentOrigin=new URLSearchParams(location.search).get('parent');
+  if(['https://www.youtube.com','https://m.youtube.com'].includes(parentOrigin)){
+    const post=payload=>window.parent.postMessage(payload,parentOrigin);
+    let sizeFrame=0;
+    new ResizeObserver(()=>{cancelAnimationFrame(sizeFrame);sizeFrame=requestAnimationFrame(()=>post({type:'ONSORI_PANEL_SIZE',height:document.body.getBoundingClientRect().height+2}));}).observe(document.body);
+    $('collapsePanel').addEventListener('click',()=>post({type:'ONSORI_PANEL_COLLAPSE'}));
+    window.addEventListener('message',event=>{if(event.source===window.parent&&event.origin===parentOrigin&&event.data?.type==='ONSORI_PANEL_CONTEXT')refresh();});
+  }
+}
+async function send(payload){const r=await chrome.runtime.sendMessage(payload);if(!r?.ok)throw new Error(r?.error||'확장 프로그램에 연결되지 않았습니다.');return r;}
+function feedback(text,error=true){$('feedback').textContent=text;$('feedback').style.color=error?'#ffb3b7':'#a2efcd';}
+function renderOperation(op){
+  operation=op;
+  const busy=['requesting','preparing','capturing','uploading','queued','running'].includes(op.phase);
+  const own=(!op.videoId||op.videoId===currentVideoId)&&(!op.tabId||op.tabId===currentTabId),recording=op.phase==='capturing'&&own;
+  $('operationPanel').hidden=op.phase==='idle'||(!busy&&!own);
+  $('operationPanel').dataset.error=String(op.phase==='error');
+  $('operationMessage').textContent=own?op.message||'':'다른 YouTube 탭에서 분석 중입니다. 해당 탭에서 진행 상태를 확인하거나 완료 후 다시 시작해 주세요.';
+  $('phaseLabel').textContent=!own?'다른 영상 분석 중':({waiting_permission:'녹음 연결',waiting_server:'서버 연결 대기',requesting:'분석 요청',preparing:'녹음 준비',capturing:'탭 오디오 녹음 중',uploading:'구간 업로드',queued:'분석 대기',running:'소리 분석 중',done:'자막 적용 완료',error:'확인이 필요합니다',cancelled:'분석 취소'})[op.phase]||'분석 상태';
+  $('progress').value=op.progress||0;$('progress').hidden=!busy||recording||!own;
+  $('stop').hidden=!recording;$('cancel').hidden=!busy||!own;$('replay').hidden=op.phase!=='done'||!op.capture||!own;
+  $('analyze').disabled=busy||pending||!validTab||!serverReady;$('capture').disabled=busy||pending||!validTab||!serverReady;
+  $('captureClock').textContent=recording?`${Math.max(0,Math.min(60,Math.floor((Date.now()-(op.startedAt||Date.now()))/1000)))} / 60초`:'';
+  const silent=op.level?.silentSeconds>=5;$('audioSignal').hidden=!recording;$('audioSignal').dataset.silent=String(silent);
+  $('audioSignal').textContent=silent?'소리 입력이 작거나 없습니다. 영상·탭 음소거를 확인하세요.':op.level?.bytes>0?`소리 수신 중 · ${Math.round(op.level.bytes/1024)} KB`:'탭 오디오 신호 확인 중';
+  $('audioMeter').hidden=!recording;$('audioMeter').value=Math.min(1,Math.sqrt(op.level?.rms||0)*3);
+}
+async function refresh(){const sequence=++refreshSequence;try{const data=await send({type:'GET_STATE'});if(sequence!==refreshSequence)return;validTab=Boolean(data.videoId);currentVideoId=data.videoId;currentTabId=data.tabId;current=data.document;$('videoTitle').textContent=validTab?data.title.replace(/ - YouTube$/,''):'YouTube 영상 페이지에서 사용해 주세요.';$('documentStatus').textContent=current?`${current.cues.length}개 자막 · 영상에 연결됨`:data.awaitingAnalysis?'분석 완료 후 자막 표시':'이 영상의 자막 없음';$('export').disabled=!current;$('remove').disabled=!data.hasStoredDocument;$('importButton').disabled=!validTab;for(const id of fields){const el=$(id);if(document.activeElement===el)continue;if(el.type==='checkbox')el.checked=data.settings[id];else el.value=data.settings[id];}if(!optionsLoaded){$('language').value=data.analysisOptions.language;$('audioCaptioning').checked=data.analysisOptions.audio_captioning;optionsLoaded=true;}strengthLabel();renderOperation(data.operation);}catch(e){feedback(e.message);}}
+function strengthLabel(){$('strengthValue').textContent=({'0':'고정','0.5':'부드럽게','1':'강하게'})[$('effectStrength').value];}
+async function health(){$('healthText').textContent='분석 서버 확인 중';$('checkHealth').disabled=true;try{const r=await send({type:'HEALTH'});serverReady=true;$('healthText').textContent='분석 준비 완료';$('healthDot').className='dot';$('healthText').title=r.health.message||'';}catch{serverReady=false;$('healthText').textContent='분석 서버 꺼짐';$('healthDot').className='dot danger';}finally{$('setupHelp').hidden=serverReady;$('checkHealth').disabled=false;renderOperation(operation);}}
+async function action(type){feedback('');pending=true;renderOperation(operation);try{await send({type,options:{language:$('language').value,audio_captioning:$('audioCaptioning').checked}});}catch(e){feedback(e.message);}finally{pending=false;await refresh();}}
+for(const id of fields)$(id).addEventListener('change',async()=>{const settings={typographyVersion:2};for(const key of fields){const el=$(key);settings[key]=el.type==='checkbox'?el.checked:el.value;}try{await send({type:'SET_SETTINGS',settings:normalizeSettings(settings)});strengthLabel();}catch(e){feedback(e.message);}});
+$('effectStrength').addEventListener('input',strengthLabel);$('studio').addEventListener('click',()=>action('OPEN_STUDIO'));$('checkHealth').addEventListener('click',health);$('analyze').addEventListener('click',()=>action('ANALYZE_URL'));$('capture').addEventListener('click',()=>action('START_CAPTURE'));$('stop').addEventListener('click',()=>action('STOP_CAPTURE'));$('cancel').addEventListener('click',()=>action('CANCEL'));$('remove').addEventListener('click',()=>action('REMOVE_DOCUMENT'));
+$('replay').addEventListener('click',()=>action('REPLAY_CAPTURE'));
+$('importButton').addEventListener('click',()=>$('importFile').click());$('importFile').addEventListener('change',async event=>{const file=event.target.files[0];if(!file)return;try{if(file.size>10*1024*1024)throw new Error('JSON 파일은 10MB 이하만 선택해 주세요.');const doc=parseDocument(await file.text());await send({type:'IMPORT',document:doc});feedback('현재 영상에 자막을 적용했습니다.',false);await refresh();}catch(e){feedback(e.message);}event.target.value='';});
+$('export').addEventListener('click',()=>{if(!current)return;const blob=new Blob([subtitleFile(current,'json')],{type:'application/json;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`onsori-${current.video_id}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+chrome.storage.onChanged.addListener((changes,area)=>{if(area!=='local')return;if(changes.operation)renderOperation(changes.operation.newValue||{phase:'idle'});if(changes.captionCache||changes.settings||changes.operation)refresh();});setInterval(()=>{if(operation.phase==='capturing')renderOperation(operation);},1000);refresh();health();if(!embedded)send({type:'AUTO_START',invoked:true}).then(()=>refresh()).catch(e=>feedback(e.message));

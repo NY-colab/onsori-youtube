@@ -1,0 +1,10 @@
+.venv/
+.venv-caption/
+models/
+runtime/
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+*.log
+verification/browser-profile/
