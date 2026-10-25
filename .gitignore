@@ -6,5 +6,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 node_modules/
+tools/
+OnSori.exe
 *.log
 verification/browser-profile/

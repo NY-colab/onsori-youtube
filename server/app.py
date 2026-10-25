@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import json
+import hashlib
 import logging
 from pathlib import Path
 import re
@@ -48,7 +49,7 @@ class Job:
 
 
 jobs: dict[str, Job] = {}
-app = FastAPI(title="온소리 자막 · 로컬 분석", version="0.1.0", docs_url=None, redoc_url=None)
+app = FastAPI(title="온소리 자막 · 로컬 분석", version="0.1.1", docs_url=None, redoc_url=None)
 
 
 class BodyLimit:
@@ -184,8 +185,10 @@ def finish(job, doc, folder):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "0.1.0", "models": pipeline.dependencies(),
-            "message": "로컬 분석 서버 연결됨 · 모델은 첫 분석에서 준비합니다"}
+    return {"status": "ok", "version": "0.1.1",
+            "installation_id": hashlib.sha256(str(ROOT.resolve()).lower().encode('utf-8')).hexdigest(),
+            "models": pipeline.dependencies(),
+            "message": "로컬 분석 서버 연결됨"}
 
 
 @app.post("/api/jobs/youtube", status_code=202)

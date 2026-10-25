@@ -2,7 +2,7 @@ import {DEFAULT_SETTINGS,normalizeSettings,validateDocument,youtubeId,readyDocum
 const API='http://127.0.0.1:8765',HEADERS={'X-OnSori-Client':'onsori-local-v1'};
 let pollTimer,creatingOffscreen,mutation=Promise.resolve(),operationEpoch=0;
 const messageError=e=>{const text=e?.message||String(e);return /Extension has not been invoked|activeTab permission/i.test(text)?'YouTube 영상에서 Chrome 도구 모음의 온소리 아이콘을 직접 클릭한 뒤 구간 녹음을 시작해 주세요.':text;};
-async function api(path,options={}){let response;try{response=await fetch(API+path,{...options,headers:{...HEADERS,...options.headers},signal:AbortSignal.timeout(15000)});}catch{throw new Error('분석 서버가 꺼져 있습니다. 온소리 폴더의 Start-OnSori.cmd를 실행한 뒤 다시 시도해 주세요.');}if(!response.ok){let body;try{body=await response.json();}catch{}throw new Error(body?.detail||body?.error||`분석 요청 오류 (${response.status})`);}return response.json();}
+async function api(path,options={}){let response;try{response=await fetch(API+path,{...options,headers:{...HEADERS,...options.headers},signal:AbortSignal.timeout(15000)});}catch{throw new Error('분석 서버가 꺼져 있습니다. 바탕화면 OnSori(또는 Start-OnSori.cmd)를 실행한 뒤 다시 시도해 주세요.');}if(!response.ok){let body;try{body=await response.json();}catch{}throw new Error(body?.detail||body?.error||`분석 요청 오류 (${response.status})`);}return response.json();}
 async function state(){return (await chrome.storage.local.get('operation')).operation||{phase:'idle',message:'분석할 YouTube 영상을 선택해 주세요.'};}
 async function setState(value){const operation={...value,updatedAt:Date.now()};const update={operation};
   // Invalidate playback before recording/requesting, atomically with progress.

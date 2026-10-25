@@ -2,15 +2,27 @@
 
 대사, 음악, 효과음을 함께 읽고 소리의 상대적인 크기를 글자 크기로 표현하는 Chrome 확장 프로그램 + 로컬 자막 스튜디오 프로토타입입니다. `[마이 AI 랩] 소리모이` 활동계획서 최종 PDF의 정보량 3단계, 표현 강도 조절, 검수 흐름을 반영했습니다.
 
-## 다운로드
+## 가장 쉬운 설치 (Windows)
 
-**[Windows용 온소리 ZIP 바로 다운로드](https://github.com/NY-colab/onsori-youtube/releases/latest/download/OnSori-prototype-0.1.0.zip)** · [릴리스와 변경 사항](https://github.com/NY-colab/onsori-youtube/releases/latest)
+**[온소리 설치 파일 바로 다운로드 — OnSori-Setup.exe](https://github.com/NY-colab/onsori-youtube/releases/latest/download/OnSori-Setup.exe)** · [릴리스 / 체크섬](https://github.com/NY-colab/onsori-youtube/releases/latest)
 
-ZIP을 먼저 압축 해제하세요. 처음 설치하는 PC에서는 아래 **다른 Windows PC에 설치** 절차로 `uv`와 Node.js를 준비한 뒤 `Install-OnSori.cmd`를 실행합니다. 이후 `Start-OnSori.cmd`를 실행하고 Chrome에 `extension` 폴더를 등록합니다. Chrome 웹 스토어 자동 설치 파일이 아니라 로컬 서버와 함께 사용하는 Windows 프로토타입입니다. 모델은 첫 분석 시 별도로 내려받습니다.
+1. 다운로드한 **OnSori-Setup.exe**를 열고 **온소리 설치**를 누릅니다. Python·Node.js·분석 프로그램·기본 AI 모델을 자동으로 설치하고 검사합니다. 터미널 명령 입력은 필요하지 않습니다. Microsoft 실행 구성요소가 없는 PC에서는 해당 구성요소의 설치 승인(관리자 권한)이 한 번 필요할 수 있습니다.
+2. 설치 완료 화면의 **① 확장 폴더 복사 + Chrome 설정 열기**를 누릅니다. Chrome에서 **개발자 모드 → 압축해제된 확장 프로그램을 로드합니다**를 선택한 뒤, 폴더 창 **Alt+D → Ctrl+V → Enter → 폴더 선택**을 누릅니다. 이 등록은 PC마다 처음 한 번만 합니다.
+3. **② 등록 완료 · YouTube 열기**를 누르고 영상을 재생합니다. 영상 옆 온소리 패널에서 자동 분석합니다. 탭 녹음 권한 안내가 나오면 Chrome 퍼즐 아이콘 → **온소리 자막 in YouTube**를 한 번 누릅니다.
+
+다음부터는 **바탕화면 OnSori**만 실행하면 서버와 YouTube가 열립니다. 설치 화면의 **Windows 로그인 시 분석 서버 자동 준비**를 선택하면 서버가 로그인 때 자동으로 켜집니다(기본 꺼짐). 설치 중에는 진행 상태와 로그를 보여 주며, 다운로드가 실패하면 같은 파일에서 **다시 시도**할 수 있습니다.
+
+- **지원 환경:** Windows 10/11 x64, Google Chrome 116 이상, 인터넷. GPU나 API 키는 필요하지 않습니다. 처음 설치할 때 수 GB 이상을 내려받을 수 있어 여유 공간 10GB 이상을 권장합니다. 실제 시간은 회선과 PC에 따라 달라집니다.
+- **설치 위치:** `%LOCALAPPDATA%\OnSori`. 전용 Python과 Node.js만 사용하며 시스템 PATH나 Chrome 정책을 변경하지 않습니다. 분석 오디오·화면 자막 이미지는 로컬에 남습니다.
+- **배포 상태:** 서명되지 않은 프로토타입 실행 파일이어서 Windows 평판 경고가 표시될 수 있습니다. 보안 프로그램을 끄거나 조직의 차단 정책을 우회하지 마세요. 설치 파일 실행이 허용되지 않는 환경에는 아래 소스 ZIP을 제공하며, 조직 정책에 따라 실행이 제한될 수 있습니다.
+- **Chrome 등록:** 웹 스토어 심사·등록 전이므로 마지막 확장 등록은 직접 해야 합니다. 설치 프로그램이 Chrome 권한을 몰래 허용하거나 확장을 강제로 등록하지 않습니다. [Chrome 배포 안내](https://developer.chrome.com/docs/extensions/how-to/distribute)
+- **기본 모델:** Whisper base, AST, 한국어 PaddleOCR를 미리 내려받아 로딩 검사합니다. 선택 기능 CoNeTTE는 별도 설치입니다.
+
+[소스 ZIP 다운로드](https://github.com/NY-colab/onsori-youtube/releases/latest/download/OnSori-prototype-0.1.1.zip) · [설치 문제 해결 / 제거](docs/installation.md)
 
 ## 설치 후 시작
 
-1. **`Start-OnSori.cmd`**를 실행합니다. 스튜디오 주소는 **http://127.0.0.1:8765** 입니다.
+1. **바탕화면 OnSori**(ZIP 사용자는 `Start-OnSori.cmd`)를 실행합니다. 스튜디오 주소는 **http://127.0.0.1:8765** 입니다.
 2. Chrome 주소창에 **`chrome://extensions`**를 입력하고 **개발자 모드**를 켭니다.
 3. **압축해제된 확장 프로그램을 로드합니다** → 이 폴더 안의 **`extension`** 폴더를 선택합니다. ZIP 파일 자체를 선택하지 마세요.
 4. YouTube 영상 페이지를 새로고침하고 확장 프로그램 목록에서 **온소리 자막 in YouTube**를 고정합니다.
@@ -24,19 +36,15 @@ ZIP을 먼저 압축 해제하세요. 처음 설치하는 PC에서는 아래 **�
 
 현재 탭 오디오와 영상 하단의 자막 이미지를 수집하며 마이크는 사용하지 않습니다. 화면 이미지는 동영상 픽셀만 읽고 브라우저 주소창·댓글·다른 창은 수집하지 않습니다. 실시간 자막 방식이 아니라 **녹음 후 분석하는 방식**입니다. 광고가 끝난 뒤 시작하세요. 일시정지·탐색·배속 변경·버퍼링·새로고침·다른 영상 이동 시에는 시간축이 어긋나지 않도록 녹음을 종료합니다. 버퍼링이 잦으면 안정적으로 재생된 뒤 구간을 나누어 녹음하세요. 입력 신호가 여러 차례 작게 측정되면 영상·탭 음소거 확인 안내가 표시됩니다. 조용한 장면에서도 나타날 수 있으므로 자동으로 음소거를 해제하거나 녹음을 취소하지는 않습니다.
 
-이미 설치한 상태에서 소스가 수정됐다면 `chrome://extensions`의 **온소리 자막 in YouTube → 새로고침(⟳)**을 한 번 누른 뒤 YouTube 페이지도 새로고침합니다. 재설치나 전체 권한 허용은 필요하지 않습니다. 서버가 꺼져 있으면 패널과 팝업에 **Start-OnSori.cmd 실행 → 다시 확인** 안내가 표시됩니다. 설정과 JSON 파일 관리는 **자막 모양 · 파일 관리** 안에 있습니다.
+이미 설치한 상태에서 소스가 수정됐다면 `chrome://extensions`의 **온소리 자막 in YouTube → 새로고침(⟳)**을 한 번 누른 뒤 YouTube 페이지도 새로고침합니다. 재설치나 전체 권한 허용은 필요하지 않습니다. 서버가 꺼져 있으면 패널과 팝업에 **바탕화면 OnSori 실행 → 다시 확인** 안내가 표시됩니다. 설정과 JSON 파일 관리는 **자막 모양 · 파일 관리** 안에 있습니다.
 
 전체 종료는 **`Stop-OnSori.cmd`**입니다. 이 프로그램이 기록한 서버 프로세스만 종료합니다. 분석 중 종료하면 해당 작업은 다시 시작해야 합니다.
 
-## 다른 Windows PC에 설치
+## 소스 ZIP으로 설치 (개발자용)
 
-- Chrome 116 이상, 인터넷, 여유 디스크 공간과 메모리가 필요합니다. CPU 실행을 기본으로 하며 NVIDIA GPU는 필수가 아닙니다.
-- `uv`가 없다면 PowerShell에서 `winget install --id astral-sh.uv -e`로 설치하고 새 터미널을 엽니다.
-- YouTube URL 분석에는 Node.js도 사용합니다. 없다면 `winget install --id OpenJS.NodeJS.LTS -e`로 설치하고 서버를 새로 실행하세요. 로컬 파일 분석에는 필요하지 않습니다.
-- **`Install-OnSori.cmd`**: Python 3.10 격리 환경과 고정 버전 의존성을 설치합니다.
-- **`Install-Detail-Captions.cmd`**: 선택 기능인 CoNeTTE의 별도 환경을 설치합니다. 서로 다른 PyTorch 버전 충돌을 피하려고 분리했습니다.
-- **`Start-OnSori.cmd`** 실행 후 위 Chrome 로드 절차를 진행합니다. 첫 분석에서는 공개 모델을 다운로드하므로 시간이 걸립니다. 상세 묘사에는 추가 모델과 번역 모델이 필요합니다. 용량·기기 성능에 따라 수 GB 이상 공간을 확보하세요.
-- ZIP에는 소스만 포함됩니다. 가상환경, 모델, 사용자의 분석 오디오, 신청서 원본은 포함하지 않습니다.
+ZIP을 압축 해제한 뒤 `Install-OnSori.cmd`를 실행합니다. 여기에서도 Python·Node.js·기본 모델을 자동으로 준비하므로 `winget`이나 `pip` 명령을 직접 입력하지 않아도 됩니다. 이후 `Start-OnSori.cmd`로 서버를 켜고 `extension` 폴더를 Chrome에 등록합니다. ZIP 방식은 바탕화면 바로가기를 만들지 않습니다.
+
+상세 소리 문장을 생성하는 CoNeTTE는 선택 기능입니다. 필요한 경우 `Install-Detail-Captions.cmd`를 실행하면 별도 환경을 준비합니다. 기본 음악·효과음 묘사에는 이 추가 설치가 필요하지 않습니다.
 
 ## 자막 스튜디오
 

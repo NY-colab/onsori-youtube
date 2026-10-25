@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "온소리 자막 in YouTube",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "대사, 음악, 효과음과 소리의 크기를 함께 읽는 한국어 접근성 자막. 로컬 분석 서버가 필요합니다.",
   "minimum_chrome_version": "116",
   "permissions": [

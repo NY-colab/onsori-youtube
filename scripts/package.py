@@ -20,7 +20,7 @@ def main():
     paths = sorted(paths, key=lambda p: p.relative_to(ROOT).as_posix())
     manifest = '\n'.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' +
                          p.relative_to(ROOT).as_posix() for p in paths) + '\n'
-    destination = ROOT.parent / 'OnSori-prototype-0.1.0.zip'
+    destination = ROOT.parent / 'OnSori-prototype-0.1.1.zip'
     with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for p in paths:
             info = zipfile.ZipInfo('onsori/' + p.relative_to(ROOT).as_posix(), (2026,10,24,0,0,0))
