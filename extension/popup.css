@@ -18,3 +18,6 @@ html[data-view=panel] .video-card p{max-height:none;display:-webkit-box;-webkit-
 html[data-view=panel] .status-actions{flex-wrap:wrap}
 html[data-view=panel] footer{padding:12px 18px}
 @media(max-width:359px){html[data-view=panel] h1 span{display:block;margin:2px 0 0}html[data-view=panel] header p{display:none}}
+
+/* Keep optional capture disclosures readable in the compact toolbar and sidebar. */
+.analysis-options{display:grid;grid-template-columns:1fr;gap:10px}.analysis-options>label:first-child{width:100%}.detail-option{font-size:11px;align-items:flex-start;line-height:1.7}.detail-option input{flex-shrink:0;margin-top:4px}.setup-help .primary{width:100%;margin-top:10px}

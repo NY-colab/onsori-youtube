@@ -4,7 +4,9 @@ export function createFrameCollector(makeCanvas=()=>document.createElement('canv
   return {
     reset(id){frames=[];videoId=id;last=-Infinity;unavailable=false;},
     observe(video,snap){
-      if(unavailable||frames.length>=241||!video||!snap||snap.videoId!==videoId||snap.ad||snap.paused||!Number.isFinite(snap.time)||snap.time<0||snap.time-last<.24||!video.videoWidth||!video.videoHeight)return;
+      // At most 121 x 350 KB keeps the complete runtime message below Chrome's
+      // 64 MiB limit and matches the OCR engine's two observations per second.
+      if(unavailable||frames.length>=121||!video||!snap||snap.videoId!==videoId||snap.ad||snap.paused||!Number.isFinite(snap.time)||snap.time<0||snap.time-last<.48||!video.videoWidth||!video.videoHeight)return;
       last=snap.time;
       try{
         const canvas=makeCanvas(),scale=Math.min(1,1280/video.videoWidth),top=Math.floor(video.videoHeight*.60);

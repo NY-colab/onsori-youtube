@@ -1,5 +1,26 @@
 # 사용한 오픈소스와 모델
 
+## 브라우저 전용 0.2.0
+
+브라우저 실행 코드는 확장 ZIP에 동봉하며, 모델 데이터만 고정된 revision에서 내려받습니다. 모델·런타임 설정은 [model-config.js](../extension/model-config.js), 동봉 파일 해시는 [build-manifest.json](../extension/vendor/build-manifest.json), 라이선스 본문은 [THIRD-PARTY-NOTICES.txt](../extension/vendor/THIRD-PARTY-NOTICES.txt)에 있습니다.
+
+| 역할 | 실제 사용한 프로젝트 | 버전 / 조건 |
+| --- | --- | --- |
+| 브라우저 모델 실행 | [Transformers.js](https://github.com/huggingface/transformers.js), [ONNX Runtime](https://github.com/microsoft/onnxruntime) | Transformers.js 3.7.6 Apache-2.0; ONNX Runtime MIT, lockfile에 고정 |
+| 대사 | [OpenAI Whisper](https://github.com/openai/whisper), [ONNX 변환](https://huggingface.co/onnx-community/whisper-base) | Whisper base q8. OpenAI 코드 MIT; 기반 모델 카드 Apache-2.0 |
+| 음악·효과음 | [AST](https://github.com/YuanGongND/ast), [ONNX 변환](https://huggingface.co/Xenova/ast-finetuned-audioset-10-10-0.4593) | AudioSet AST q8, 기반 코드·모델 BSD-3-Clause |
+| 화면 자막 | [Tesseract.js](https://github.com/naptha/tesseract.js), [tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast) | Tesseract.js 6.0.1 Apache-2.0; 한국어·영어 데이터 Apache-2.0 |
+| 번들 빌드 | [esbuild](https://github.com/evanw/esbuild) | 0.25.11 MIT, 개발 시에만 사용 |
+
+JS·WASM 런타임은 패키지에 들어갑니다. 따라서 아래 구형 문서의 “타사 바이너리 없음” 문구는 0.1.1에만 해당합니다. PyTorch·CoNeTTE·PaddleOCR·Python 서버는 0.2.0 확장 실행에 사용하지 않습니다. 음악·효과음 문구는 AST의 다중 라벨 점수와 한국어 표현표를 조합하며, 생성형 오디오 캡셔닝 모델의 출력으로 소개하지 않습니다.
+
+실제 동작 검증과 한계는 [브라우저 엔진](browser-engine.md)에 기록합니다. 시험 영상·음원은 소스와 배포 ZIP에 포함하지 않습니다.
+
+---
+
+## 아래는 이전 로컬 설치형 0.1.1의 구성 기록
+
+
 확인일: 2026-10-25. GitHub의 실제 저장소, 저자 모델 카드와 설치된 배포본을 확인했습니다. 확장과 스튜디오는 이 프로젝트용으로 작성했으며, 아래 라이브러리와 공개 가중치를 로컬에서 호출합니다. ZIP에는 타사 바이너리·모델 가중치가 포함되지 않습니다.
 
 ## 실제 연결한 구성

@@ -1,0 +1,32 @@
+{
+  "publication_status": "not_submitted",
+  "version": "0.2.0",
+  "language": "ko",
+  "name": "온소리 자막 in YouTube",
+  "summary": "YouTube 대사·음악·효과음을 기기 내 AI로 자막화합니다. 별도 프로그램 없이 소리 크기도 구간별 글자 크기로 표현합니다.",
+  "category_suggestion": "Accessibility",
+  "single_purpose": "YouTube 영상의 대사·음악·효과음과 상대적인 음량을 한국어 접근성 자막으로 표시합니다. 모든 분석은 사용자의 Chrome 안에서 수행합니다.",
+  "description": "대사 너머의 소리까지, 함께 읽어요.\n\n온소리는 YouTube 영상 옆 패널에서 대사·음악·효과음을 분석하고 영상 위에 자막으로 표시하는 확장 프로그램입니다. 별도 EXE, Python, API 키 또는 분석 서버 설치가 필요하지 않습니다.\n\n주요 기능\n• 한국어 대사 인식과 자막 시각 추정\n• 악기·분위기·음악 유형 및 효과음 묘사: 모델이 구별한 특징을 한국어로 표현\n• 구간 평균 음량에 따른 글자 크기: 한 대사나 효과음 안에서는 크기를 고정\n• 같은 시각의 YouTube 표시 자막 대조, 선택 가능한 화면 자막 OCR 교정\n• 최대 60초씩 녹음·분석, 1배속 재생 중 자동으로 다음 구간 분석\n• 자막 크기·표시 종류·지연 조절, JSON 가져오기 및 저장\n\n사용 방법\n1. YouTube 영상에서 Chrome 도구 모음의 온소리 아이콘을 엽니다.\n2. 처음 한 번 '기기 내 분석 사용 설정'을 누르고 영상을 재생합니다.\n3. 처음에는 수백 MB의 모델 파일을 내려받습니다. 분석이 끝나면 자막이 표시되고, 지나간 구간은 '자막으로 다시 보기'로 확인합니다.\n\n데이터 처리\n오디오와 선택한 화면 자막 이미지는 브라우저 안에서 분석합니다. 외부 AI 분석 서버로 전송하지 않고 마이크를 사용하지 않습니다. 자막과 설정은 Chrome에 저장됩니다. 모델 다운로드에는 인터넷이 필요합니다.\n\n알아두세요\n실시간 동시 자막이 아니라 녹음한 구간을 분석한 뒤 보여 줍니다. PC 성능에 따라 처리 시간이 달라지며, 음성 인식·음악 분류·OCR에는 오류가 있을 수 있습니다. 표시된 원래 자막이나 읽을 수 있는 화면 자막이 없으면 교정되지 않을 수 있습니다. 음악의 곡명이나 가수를 식별하지 않습니다. 효과음의 발생 시각은 분석 창 기준의 추정입니다. 광고·일부 보호된 영상·브라우저 권한 상태에 따라 녹음이나 화면 참조가 제한될 수 있습니다.\n\nWhisper, Transformers.js, AST/AudioSet, Tesseract.js 등 공개 소프트웨어와 모델을 사용합니다. YouTube 또는 Google의 공식 제품이 아닙니다.",
+  "homepage_url": "https://github.com/NY-colab/onsori-youtube",
+  "support_url": "https://github.com/NY-colab/onsori-youtube/issues",
+  "privacy_policy_url": "https://github.com/NY-colab/onsori-youtube/blob/main/docs/privacy-browser.md",
+  "permissions": {
+    "storage": "현재 Chrome 프로필에 자막 표시 설정, 분석 사용 동의, 진행 상태, 최근 영상 자막을 저장합니다. 계정 동기화나 외부 전송에는 사용하지 않습니다.",
+    "activeTab": "사용자가 Chrome 도구 모음에서 확장을 실행한 현재 YouTube 탭에 한정하여 탭 오디오 캡처를 요청하고 자막을 연결합니다.",
+    "tabCapture": "사용자가 사용 설정한 YouTube 탭의 소리를 최대 60초씩 캡처하여 대사·효과음·음악 및 평균 음량을 브라우저에서 분석합니다. 마이크는 사용하지 않습니다.",
+    "offscreen": "팝업이 닫힌 뒤에도 탭 오디오 녹음·재생음 유지·오디오 디코딩·WASM 분석 작업자를 실행합니다. 외부 서버 업로드에는 사용하지 않습니다.",
+    "host_permissions": "www.youtube.com 및 m.youtube.com은 현재 영상의 재생 상태와 표시 자막을 읽고 영상 옆 패널·자막 오버레이를 표시하는 데 사용합니다. huggingface.co와 하위 도메인 및 hf.co/xethub.hf.co 전송 도메인은 고정된 공개 ONNX 모델·설정·토크나이저 파일 다운로드에 사용합니다. raw.githubusercontent.com/tesseract-ocr/tessdata_fast/는 고정된 한국어·영어 OCR 학습 데이터 다운로드에만 사용합니다. 원본 오디오·화면 이미지·자막을 이 호스트들로 업로드하지 않습니다."
+  },
+  "remote_code": false,
+  "remote_code_explanation": "JavaScript, inference workers, ONNX Runtime Web WASM and Tesseract WASM are bundled in the ZIP. Only pinned model weights/tokenizer/configuration/traineddata are fetched remotely. Remote executable code is not used. CSP allows wasm-unsafe-eval solely for bundled WASM; executable worker sources are self only.",
+  "data_disclosures": {
+    "website_content": true,
+    "web_history": true,
+    "user_activity": true,
+    "explanation": "현재 선택된 YouTube 영상 ID/제목/재생 상태, 탭 오디오, 표시 자막, 선택적 영상 자막 이미지를 기기 내에서만 처리합니다. 자막 캐시는 최대 8개 영상의 ID와 제목을 포함합니다. 다른 사이트 방문 기록·키 입력·마우스 추적은 하지 않습니다. 로컬 처리도 사용자 데이터 처리이므로 '데이터를 전혀 수집하지 않음'으로 선언하지 않습니다. 대시보드 실제 항목의 정의와 최종 구현을 대조하여 이 범위만 선택합니다.",
+    "not_sold": true,
+    "only_single_purpose": true,
+    "not_creditworthiness": true
+  },
+  "reviewer_instructions": "No account or companion program is required. Open a public YouTube watch page with audible Korean or English speech. Invoke the extension from Chrome's toolbar, click the Korean button '기기 내 분석 사용 설정' (Enable on-device analysis), then play at 1x or click '현재 구간 자막 만들기'. Wait for up to 60 seconds recording, then model download and local WASM inference. '여기까지 녹음 · 분석' stops recording early. A first-run model download can take several minutes; progress messages identify current stage. The panel survives closing the toolbar popup. Completed captions appear on the video; click '자막으로 다시 보기' to replay the analyzed interval. The sound event classifier and optional Korean OCR run locally. Open analysis options to opt into screen subtitle correction; it defaults off. Cancellation stops the inference worker and never publishes partial results. See help.html via the extension's Options entry. No localhost service is used."
+}

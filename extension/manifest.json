@@ -1,8 +1,10 @@
 {
   "manifest_version": 3,
   "name": "온소리 자막 in YouTube",
-  "version": "0.1.1",
-  "description": "대사, 음악, 효과음과 소리의 크기를 함께 읽는 한국어 접근성 자막. 로컬 분석 서버가 필요합니다.",
+  "version": "0.2.0",
+  "description": "YouTube 대사·음악·효과음을 기기 내 AI로 자막화합니다. 별도 프로그램 없이 소리 크기도 구간별 글자 크기로 표현합니다.",
+  "options_page": "help.html",
+  "homepage_url": "https://github.com/NY-colab/onsori-youtube",
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
@@ -11,9 +13,13 @@
     "offscreen"
   ],
   "host_permissions": [
-    "http://127.0.0.1:8765/*",
     "https://www.youtube.com/*",
-    "https://m.youtube.com/*"
+    "https://m.youtube.com/*",
+    "https://huggingface.co/*",
+    "https://*.huggingface.co/*",
+    "https://*.xethub.hf.co/*",
+    "https://*.hf.co/*",
+    "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/*"
   ],
   "background": {
     "service_worker": "worker.js",
@@ -61,6 +67,6 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src http://127.0.0.1:8765"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self'; connect-src 'self' data: blob: https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://*.hf.co https://raw.githubusercontent.com"
   }
 }

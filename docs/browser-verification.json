@@ -1,0 +1,157 @@
+{
+  "version": "0.2.0",
+  "web_store_status": "not_submitted",
+  "scope": "Isolated Windows Chromium. Real selected video audio and frames supplied from local QA files; no live YouTube tabCapture claim.",
+  "short_actual_video": {
+    "seconds": 7,
+    "elapsed_seconds": 23.68,
+    "cues": 4,
+    "speech_cues": 2,
+    "maximum_speech_cue_seconds": 3.4,
+    "remote_executable_requests": 0,
+    "page_errors": [],
+    "post_requests": 0,
+    "permissions": {
+      "origins": [
+        "https://*.hf.co/*",
+        "https://*.huggingface.co/*",
+        "https://*.xethub.hf.co/*",
+        "https://huggingface.co/*",
+        "https://m.youtube.com/*",
+        "https://raw.githubusercontent.com/*",
+        "https://www.youtube.com/*"
+      ],
+      "permissions": [
+        "activeTab",
+        "storage",
+        "tabCapture",
+        "offscreen"
+      ]
+    },
+    "screen_correction": {
+      "available": 1,
+      "corrected": 1,
+      "method": "Tesseract word-length weighted confidence >=90/100; >=3 distinct repeated observations over >=0.8s; timestamp, character and Hangul-jamo agreement; exact source text",
+      "status": "done",
+      "processed_frames": 14,
+      "observations": 7,
+      "model": "Tesseract tessdata_fast kor+eng",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd"
+    }
+  },
+  "full_minute_actual_video": {
+    "seconds": 60,
+    "elapsed_seconds": 172.63,
+    "cues": 15,
+    "speech_cues": 8,
+    "maximum_speech_cue_seconds": 8,
+    "remote_executable_requests": 0,
+    "page_errors": [],
+    "post_requests": 0,
+    "permissions": {
+      "origins": [
+        "https://*.hf.co/*",
+        "https://*.huggingface.co/*",
+        "https://*.xethub.hf.co/*",
+        "https://huggingface.co/*",
+        "https://m.youtube.com/*",
+        "https://raw.githubusercontent.com/*",
+        "https://www.youtube.com/*"
+      ],
+      "permissions": [
+        "activeTab",
+        "storage",
+        "tabCapture",
+        "offscreen"
+      ]
+    },
+    "screen_correction": {
+      "available": 0,
+      "corrected": 0,
+      "method": "Tesseract word-length weighted confidence >=90/100; >=3 distinct repeated observations over >=0.8s; timestamp, character and Hangul-jamo agreement; exact source text",
+      "status": "no-relevant-frames",
+      "processed_frames": 0,
+      "observations": 0,
+      "model": "Tesseract tessdata_fast kor+eng",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd"
+    }
+  },
+  "final_postprocessing_regression": {
+    "scope": "Current production pure postprocessor replay over saved actual 60s model document. Original inference report remains unchanged.",
+    "inference_repeated": false,
+    "removed": [
+      {
+        "start": 25,
+        "end": 27,
+        "text": "(끝)",
+        "source": "whisper-browser-wasm",
+        "reason": "short standalone bracketed ASR metadata tag"
+      },
+      {
+        "start": 45,
+        "end": 47,
+        "text": "(끝끝)",
+        "source": "whisper-browser-wasm",
+        "reason": "short standalone bracketed ASR metadata tag"
+      }
+    ],
+    "final_cues": 13,
+    "final_speech_cues": 6
+  },
+  "music_sample": [
+    "♪ 트럼펫 연주"
+  ],
+  "effect_limitation": "Actual sneezing sample classified as throat clearing; subtype accuracy is not guaranteed.",
+  "cancellation": {
+    "asr-cancel": {
+      "error": "AbortError",
+      "message": "분석을 취소했습니다.",
+      "latency_ms": 22.099999964237213,
+      "total_ms": 1000.6999999880791
+    },
+    "ocr-cancel": {
+      "error": "AbortError",
+      "message": "분석을 취소했습니다.",
+      "latency_ms": 20.900000035762787,
+      "total_ms": 22346
+    }
+  },
+  "ui_assertions": [
+    "First-use sidebar disclosure, no enabled consent, no recording",
+    "Explicit consent persisted; sidebar refreshed; paused video never recorded",
+    "Actual browser engine document validated/imported; completed overlay renders; whole-cue font size stable",
+    "Simulated real-storage running transition hides previous overlay; real cancel message leaves overlay hidden"
+  ],
+  "font_stability": {
+    "first": {
+      "text": "대사이것은 옷이오, 이불이오?",
+      "size": 18
+    },
+    "last": {
+      "text": "대사이것은 옷이오, 이불이오?",
+      "size": 18
+    }
+  },
+  "not_verified": [
+    "Live user Chrome toolbar permission and tabCapture end-to-end",
+    "General Korean transcription accuracy",
+    "Non-Windows operating systems",
+    "Chrome Web Store submission or approval"
+  ],
+  "source_sha256": {
+    "browser-engine-asr.js": "da1a9d0c2bfd0ab3f369f7816dda69fdeccc82e5fa874aacf2479df308c7109a",
+    "browser-engine-signal.js": "bed725dbbea59420ef7cd0f6cdfcaec88cb55f5d489e31b6008a7ccfb0146a22",
+    "browser-engine-vocabulary.js": "76c5a59047e08fdaee2ea370c072aac139a8209e005b0904a40d8ca593f515b0",
+    "browser-engine.js": "3fe9127f2e9d620e0b0101476b701106c9787b4b0d56e4b0fe4fa4bf20747127",
+    "browser-inference-worker.js": "11212a9f8f861e63327066850486390c6b521c673853d31b809cac40c21dd25b",
+    "content.js": "f600601ec6d9b905ec3eb71ab5f0d3bf1894b0b9e3f658f32a64b8e34cbec126",
+    "core.js": "5633156de837d8eb502617de4f6b566e990d0acaf11f83c29e530dff505f4c6a",
+    "model-config.js": "c44da51d1a5744333a627b617aa940c1eb643a98d2e254a8f156c0553bc1a8a0",
+    "native-captions.js": "9eaa65857418da6694bb904397b34e449a71b04159ec13fff84a6ce00b6c5382",
+    "offscreen.js": "efb593e95cb6a1d71c8683f590d8241a5c7dae1f5608a2b3cfa305bc09e1de4b",
+    "panel.js": "b36d7bd93130dbefc884267a871a5238ddfe1a1991bc38bdbc9002bfcd1cae70",
+    "popup.js": "e18a1c556a1497c2c469ae26f353707df10c4ea11f452ae472f00fffa755f0d3",
+    "screen-frames.js": "988a81e299cca194f27cc2f50e287ddda36231fc8d9c8bf2bfd829d84333b8e9",
+    "worker.js": "623f26fa87d0e28e5037c0ce000fdb885323e8b7409fbcba8ce9278d9525b24f"
+  }
+}
