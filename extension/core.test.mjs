@@ -157,3 +157,15 @@ test('timing edits clip measured curves with interpolated boundary points',()=>{
   assert.deepEqual(trimVolumeProfile(profile,0,.5).map(p=>p.scale),[.75,.75]);
   assert.equal(trimVolumeProfile(undefined,0,4),undefined);
 });
+
+test('position preferences are normalized and measured centers stay inside the video viewport',async()=>{
+  const {captionPosition}=await import('./core.js');
+  assert.equal(normalizeSettings().positionX,50);assert.equal(normalizeSettings().positionY,88);
+  assert.equal(normalizeSettings({positionX:-4,positionY:'120'}).positionX,0);assert.equal(normalizeSettings({positionX:-4,positionY:'120'}).positionY,100);
+  assert.equal(normalizeSettings({positionX:NaN,positionY:null}).positionY,88);
+  const bounds={left:20,top:30,width:300,height:160},size={width:200,height:60};
+  assert.deepEqual(captionPosition({...DEFAULT_SETTINGS,positionX:0,positionY:0},bounds,size),{left:120,top:60});
+  assert.deepEqual(captionPosition({...DEFAULT_SETTINGS,positionX:100,positionY:100},bounds,size),{left:220,top:160});
+  assert.deepEqual(captionPosition(DEFAULT_SETTINGS,{left:0,top:0,width:1920,height:1080},{width:600,height:100}),{left:960,top:950.4});
+  assert.deepEqual(captionPosition(DEFAULT_SETTINGS,{left:0,top:0,width:80,height:40},{width:200,height:90}),{left:40,top:20});
+});

@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
-const source=(await readFile(new URL('./offscreen.js',import.meta.url),'utf8')).replace(/^import[^\n]+\n/,'');
+import * as fullSource from './full-source.js';
+const source=(await readFile(new URL('./offscreen.js',import.meta.url),'utf8')).replace(/^import[^\n]+\n/gm,'');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};}
 function harness(config={}){
@@ -23,7 +24,7 @@ function harness(config={}){
     async resume(){if(config.resumeError)throw new Error('resume failed');}
     async close(){this.closed++;}
   }
-  const sandbox={chrome:{runtime:{onMessage:{addListener(fn){receiver=fn;}},async sendMessage(message){messages.push(message);if(config.messageGate&&message.type==='CAPTURE_ANALYZING')await config.messageGate;return {ok:true};}}},navigator:{mediaDevices:{async getUserMedia(options){assert.equal(options.video,false);assert.equal(options.audio.mandatory.chromeMediaSource,'tab');if(config.mediaGate)await config.mediaGate;return makeStream();}}},AudioContext:Context,MediaRecorder:Recorder,Blob,FormData,AbortController,AbortSignal,Float32Array,Math,Number,Date:class extends Date{static now(){return now;}},performance:{now:()=>now},setTimeout(fn,ms){const entry={fn,ms,cleared:false};timers.push(entry);return entry;},clearTimeout(entry){if(entry)entry.cleared=true;},setInterval(fn,ms){const entry={fn,ms,cleared:false};intervals.push(entry);return entry;},clearInterval(entry){if(entry)entry.cleared=true;},async analyzeRecording(args){requests.push(args);args.onProgress({progress:.25,message:'모델 다운로드 중'});if(config.analysisGate)await config.analysisGate;if(config.analysisError)throw new Error('model failed');return {schema_version:'1.0',video_id:args.videoId,title:args.title,duration:30,cues:[],warnings:[],metadata:{audio_analyzed:true}};}};
+  const sandbox={...fullSource,async boundedDownload(url,options){if(config.downloadGate)await config.downloadGate;if(options.signal.aborted)throw new DOMException('aborted','AbortError');if(config.downloadError)throw new Error('download failed');return new Blob(['x'.repeat(3000)]);},DOMException,chrome:{runtime:{onMessage:{addListener(fn){receiver=fn;}},async sendMessage(message){messages.push(message);if(config.messageGate&&message.type==='CAPTURE_ANALYZING')await config.messageGate;return {ok:true};}}},navigator:{mediaDevices:{async getUserMedia(options){assert.equal(options.video,false);assert.equal(options.audio.mandatory.chromeMediaSource,'tab');if(config.mediaGate)await config.mediaGate;return makeStream();}}},AudioContext:Context,MediaRecorder:Recorder,Blob,FormData,AbortController,AbortSignal,Float32Array,Math,Number,Date:class extends Date{static now(){return now;}},performance:{now:()=>now},setTimeout(fn,ms){const entry={fn,ms,cleared:false};timers.push(entry);return entry;},clearTimeout(entry){if(entry)entry.cleared=true;},setInterval(fn,ms){const entry={fn,ms,cleared:false};intervals.push(entry);return entry;},clearInterval(entry){if(entry)entry.cleared=true;},async analyzeRecording(args){requests.push(args);args.onProgress({progress:.25,message:'모델 다운로드 중'});if(config.analysisGate)await config.analysisGate;if(config.analysisError)throw new Error('model failed');return {schema_version:'1.0',video_id:args.videoId,title:args.title,duration:30,cues:[],warnings:[],metadata:{audio_analyzed:true}};}};
   vm.runInNewContext(source,sandbox);
   const send=payload=>new Promise(resolve=>receiver({target:'offscreen',...payload},{},resolve));
   const prepare=(captureId='one')=>send({type:'CAPTURE_PREPARE',streamId:'tab-only',captureId});
@@ -85,4 +86,13 @@ test('model failure reports local error and clears heartbeat without publishing 
 });
 test('stale discard during inference does not abort the replacement capture',async()=>{
   const gate=deferred(),h=harness({analysisGate:gate.promise});await h.prepare();await h.record();h.recorders[0].chunk();await h.send({type:'CAPTURE_STOP'});const pending=h.recorders[0].finish();await tick();await h.prepare('two');await h.record('two');await h.send({type:'CAPTURE_DISCARD',captureId:'one'});gate.resolve();await pending;assert.equal(h.streams[1].track.stops,0);assert.equal(h.requests[0].signal.aborted,true);assert.equal(h.messages.some(m=>m.type==='ANALYSIS_COMPLETE'),false);
+});
+
+test('full video download analyzes complete source without MediaRecorder and supports cancellation',async()=>{
+ const source={url:'https://r1.googlevideo.com/videoplayback?id=test',videoId:'abcdefghijk',title:'전체',duration:361};
+ const h=harness();await h.send({type:'FULL_ANALYZE',captureId:'whole',source,options:{language:'ko'}});await tick();assert.equal(h.recorders.length,0);assert.equal(h.requests[0].scope,'full-video');assert.equal(h.requests[0].expectedDuration,361);assert.equal(h.requests[0].startTime,0);assert.equal(h.messages.at(-1).type,'ANALYSIS_COMPLETE');
+ const gate=deferred(),c=harness({downloadGate:gate.promise});await c.send({type:'FULL_ANALYZE',captureId:'whole',source});await c.send({type:'CAPTURE_DISCARD',captureId:'whole'});gate.resolve();await tick();assert.equal(c.requests.length,0);assert.equal(c.messages.some(m=>m.type==='ANALYSIS_COMPLETE'),false);
+});
+test('whole download failure does not fall through to tab recording',async()=>{
+ const h=harness({downloadError:true});await h.send({type:'FULL_ANALYZE',captureId:'whole',source:{url:'https://r1.googlevideo.com/videoplayback?id=test',videoId:'abcdefghijk',duration:361}});await tick();assert.equal(h.requests.length,0);assert.equal(h.recorders.length,0);assert.equal(h.messages.at(-1).type,'CAPTURE_ERROR');
 });

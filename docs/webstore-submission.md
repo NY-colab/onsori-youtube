@@ -1,12 +1,12 @@
-# 웹스토어 제출 자료 · 0.2.0
+# 웹스토어 제출 자료 · 0.3.0
 
 현재 상태: **미제출**. GitHub 공개, ZIP 생성, 테스트 통과는 Chrome 웹스토어 제출·승인과 다릅니다. 확장 ID나 승인 URL은 실제 대시보드 결과를 받은 뒤에만 기록합니다.
 
 ## 제출물
 
-- `OnSori-Chrome-WebStore-0.2.0.zip`: 브라우저 확장만 포함합니다. ZIP 최상위에 manifest.json이 있습니다. EXE나 Python 소스 ZIP을 올리지 마세요.
+- `OnSori-Chrome-WebStore-0.3.0.zip`: 브라우저 확장만 포함합니다. ZIP 최상위에 manifest.json이 있습니다. EXE나 Python 소스 ZIP을 올리지 마세요.
 - `store-icon-128.png`: 128×128 스토어 아이콘.
-- `screenshot-01-start.png`: 실제 확장 시작 안내 페이지. 1280×800.
+- `screenshot-01-start.png`: 이전 0.2.0 시작 안내 화면입니다. 0.3.0 실제 Chrome 검수 후 현재 화면으로 교체해야 하며, 그대로 제출하지 않습니다.
 - `webstore-listing.json`: 한국어 설명, 단일 목적, 권한 사유, 데이터 처리, 심사자 실행 안내의 원문.
 - `등록도우미.html`: 위 문구 15개를 항목별 복사 버튼으로 옮길 수 있는 로컬 안내 화면입니다. 스토어 업로드 ZIP에는 넣지 않습니다.
 - 공개 개인정보처리방침: https://github.com/NY-colab/onsori-youtube/blob/main/docs/privacy-browser.md

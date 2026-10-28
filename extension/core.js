@@ -1,4 +1,4 @@
-export const DEFAULT_SETTINGS = Object.freeze({typographyVersion:2,autoAnalyze:true,enabled:true,showSpeech:true,showSound:true,showMusic:true,infoLevel:'standard',effectStrength:1,baseSize:14,offset:0});
+export const DEFAULT_SETTINGS = Object.freeze({typographyVersion:2,autoAnalyze:true,enabled:true,showSpeech:true,showSound:true,showMusic:true,infoLevel:'standard',effectStrength:1,baseSize:14,offset:0,positionX:50,positionY:88});
 export const KIND_NAMES = Object.freeze({speech:'대사',sound:'효과음',music:'음악'});
 export function normalizeSettings(value={}) {
   const s={...DEFAULT_SETTINGS};
@@ -8,6 +8,7 @@ export function normalizeSettings(value={}) {
   // Migrate stored pre-v2 preferences exactly once, including custom sizes.
   if(value.baseSize!=null&&Number.isFinite(Number(value.baseSize))) s.baseSize=Math.min(28,Math.max(8,Number(value.baseSize)*(value.typographyVersion===2?1:.5)));
   if(Number.isFinite(Number(value.offset))) s.offset=Math.min(30,Math.max(-30,Number(value.offset)));
+  for(const key of ['positionX','positionY']) if(value[key]!=null&&Number.isFinite(Number(value[key]))) s[key]=Math.min(100,Math.max(0,Number(value[key])));
   return s;
 }
 function fail(message){throw new Error(message);}
@@ -126,4 +127,13 @@ export function updateCaptionSizes(box,cues,settings,time,responsiveScale,maxHei
   if(previous?.key===key&&rows.length===previous.rows.length&&rows.every((row,i)=>row===previous.rows[i]))return false;
   rows.forEach((row,i)=>{if(sizes[i]!==undefined){row.style.setProperty('font-size',`${sizes[i]}px`,'important');row.style.setProperty('--cue-size',`${sizes[i]}px`);row.style.setProperty('--font-size',`${sizes[i]}px`);}});
   fitCaptionBox(box,maxHeight);captionLayouts.set(box,{key,rows});return true;
+}
+
+// Coordinates are the caption box center within the visible picture. Clamp the
+// measured box to the intersection of video and viewport, including fullscreen.
+export function captionPosition(settings,bounds,size){
+  const width=Math.max(0,bounds.width),height=Math.max(0,bounds.height);
+  const halfW=Math.min(width,Math.max(0,size.width))/2,halfH=Math.min(height,Math.max(0,size.height))/2;
+  const clamp=(value,min,max)=>Math.min(max,Math.max(min,value));
+  return {left:bounds.left+clamp(width*settings.positionX/100,halfW,width-halfW),top:bounds.top+clamp(height*settings.positionY/100,halfH,height-halfH)};
 }

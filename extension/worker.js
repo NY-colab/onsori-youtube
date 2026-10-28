@@ -1,3 +1,4 @@
+import {selectFullSource} from './full-source.js';
 import {normalizeSettings,validateDocument,youtubeId,readyDocument} from './core.js';
 const busyPhases=['requesting','preparing','capturing','uploading','queued','running'];
 const captureMessages=['CAPTURE_REFERENCES','CAPTURE_LEVEL','CAPTURE_LIMIT','CAPTURE_ANALYZING','ANALYSIS_PROGRESS','ANALYSIS_COMPLETE','CAPTURE_ERROR'];
@@ -26,11 +27,12 @@ async function saveDocument(input,tabId,{completion=null,epoch=operationEpoch}={
   let doc=validateDocument(input);if(!doc.video_id)throw new Error('JSON에 현재 YouTube 영상 ID를 지정해 주세요.');
   const latest=await state();
   if(completion&&(latest.captureId!==completion.captureId||!['running','uploading','capturing'].includes(latest.phase)))return null;
+  if(completion?.mode==='full'&&(doc.metadata.analysis_scope!=='full-video'||Math.abs(doc.duration-completion.expectedDuration)>Math.max(2,completion.expectedDuration*.01)))throw new Error('전체 영상 분석 결과가 완성되지 않아 자막을 표시하지 않습니다.');
   if(completion&&(doc.video_id!==completion.videoId||doc.metadata.partial===true||doc.metadata.audio_analyzed!==true))throw new Error('완료된 소리 분석 결과가 없어 자막을 표시하지 않습니다. 다시 분석해 주세요.');
   const {captionCache={}}=await chrome.storage.local.get('captionCache'),previous=captionCache[doc.video_id];
   const reusable=previous?.displayVersion===2&&previous.document?.metadata?.audio_analyzed!==false&&previous.document?.metadata?.partial!==true;
   const start=completion?.startTime||0,end=doc.duration;if(completion&&end<=start)throw new Error('분석 결과의 녹음 구간이 올바르지 않습니다.');let ranges=[[start,end]];
-  if(completion&&reusable){
+  if(completion&&completion.mode!=='full'&&reusable){
     const old=previous.document,kept=old.cues.filter(c=>c.end<=start||c.start>=end),music_analysis={};
     for(const c of kept)if(old.metadata?.music_analysis?.[c.id])music_analysis[c.id]=old.metadata.music_analysis[c.id];
     const added=doc.cues.map((c,i)=>{const id=`clip-${completion.captureId.slice(0,16)}-${i}`;if(doc.metadata.music_analysis?.[c.id])music_analysis[id]=doc.metadata.music_analysis[c.id];return {...c,id};});
@@ -46,7 +48,7 @@ async function saveDocument(input,tabId,{completion=null,epoch=operationEpoch}={
   // Publish only the validated final document and done state, in one write.
   await chrome.storage.local.set(update);if(update.operation)await notify(tabId,{type:'OPERATION_UPDATED',operation:update.operation});await notify(tabId,{type:'DOCUMENT_UPDATED',videoId:doc.video_id});if(completion)await notify(tabId,{type:'CAPTURE_CLEAR'});return doc;
 });}
-async function ensureOffscreen(){const contexts=await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[chrome.runtime.getURL('offscreen.html')]});if(contexts.length)return;if(!creatingOffscreen)creatingOffscreen=chrome.offscreen.createDocument({url:'offscreen.html',reasons:['USER_MEDIA','BLOBS','WORKERS'],justification:'사용자가 허용한 탭 오디오를 최대 60초 녹음하고 기기 안에서 AI로 분석하며 원래 소리를 재생합니다.'}).finally(()=>creatingOffscreen=null);await creatingOffscreen;}
+async function ensureOffscreen(){const contexts=await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[chrome.runtime.getURL('offscreen.html')]});if(contexts.length)return;if(!creatingOffscreen)creatingOffscreen=chrome.offscreen.createDocument({url:'offscreen.html',reasons:['USER_MEDIA','BLOBS','WORKERS'],justification:'영상 전체 오디오를 기기 안에서 분석하며, 사용자가 선택한 경우에만 탭 오디오를 녹음합니다.'}).finally(()=>creatingOffscreen=null);await creatingOffscreen;}
 const offscreen=payload=>chrome.runtime.sendMessage({target:'offscreen',...payload});
 async function ensureIdle(){if(busyPhases.includes((await state()).phase))throw new Error('진행 중인 분석을 먼저 취소해 주세요.');}
 async function startCapture(inputOptions,sender={},automatic=false){
@@ -86,31 +88,50 @@ async function cancel(message='녹음과 분석을 취소했습니다. 자막 �
   if(op.tabId){await notify(op.tabId,{type:'CAPTURE_ACTIVE',active:false});await notify(op.tabId,{type:'CAPTURE_CLEAR'});}if(op.captureId)try{await offscreen({type:'CAPTURE_DISCARD',captureId:op.captureId});}catch{}
 }
 async function rememberAuto(key,patch){const {autoHistory={}}=await chrome.storage.local.get('autoHistory');autoHistory[key]={...autoHistory[key],...patch,updatedAt:Date.now()};await chrome.storage.local.set({autoHistory:Object.fromEntries(Object.entries(autoHistory).sort((a,b)=>b[1].updatedAt-a[1].updatedAt).slice(0,48))});return autoHistory[key];}
+async function startFull(inputOptions,sender={},automatic=false){
+  const requestEpoch=operationEpoch;await ensureIdle();const tab=await requestTab(sender),id=youtubeId(tab.url),{localConsent}=await chrome.storage.local.get('localConsent');
+  if(localConsent?.enabled!==true)throw new Error('기기 내 분석을 먼저 사용 설정해 주세요.');
+  if(requestEpoch!==operationEpoch)return {ok:true,cancelled:true};
+  const epoch=++operationEpoch,captureId=crypto.randomUUID(),options=analysisOptions(inputOptions),base={automatic,capture:false,mode:'full',captureId,tabId:tab.id,videoId:id,startTime:0,progress:0};
+  await rememberAuto(`${tab.id}:${id}`,{fullAttempted:true,cancelled:false});
+  await chrome.storage.local.set({analysisOptions:options});await setState({...base,phase:'preparing',message:'영상 전체 오디오를 확인합니다.'},epoch);
+  try{
+    const initial=await notify(tab.id,{type:'VIDEO_STATE'});if(initial?.ad)throw new Error('광고가 끝난 뒤 전체 분석을 시작해 주세요.');
+    const data=await notify(tab.id,{type:'GET_FULL_SOURCE',videoId:id});
+    if(epoch!==operationEpoch)return {ok:true,cancelled:true};
+    const source=selectFullSource(data,id,options.language);await ensureOffscreen();
+    if(epoch!==operationEpoch)return {ok:true,cancelled:true};
+    const op={...base,title:source.title,expectedDuration:source.duration,phase:'running',message:'전체 오디오를 가져옵니다. 영상은 재생하지 않아도 됩니다.'};
+    if(!await setState(op,epoch))return {ok:true,cancelled:true};
+    const result=await offscreen({type:'FULL_ANALYZE',captureId,source,options});
+    if(epoch!==operationEpoch){await offscreen({type:'CAPTURE_DISCARD',captureId});return {ok:true,cancelled:true};}
+    if(!result?.ok)throw new Error(result?.error||'전체 분석을 시작하지 못했습니다.');return {ok:true};
+  }catch(e){if(epoch!==operationEpoch)return {ok:true,cancelled:true};await setState({...base,phase:'error',message:messageError(e)},epoch);throw e;}
+}
 async function autoStart(message,sender){
-  const epoch=operationEpoch,data=await chrome.storage.local.get(['settings','analysisOptions','captionCache','autoHistory','localConsent']),settings=normalizeSettings(data.settings),op=await state();
+  const data=await chrome.storage.local.get(['settings','analysisOptions','captionCache','autoHistory','localConsent']),settings=normalizeSettings(data.settings),op=await state();
   if(data.localConsent?.enabled!==true||!settings.enabled||!settings.autoAnalyze||busyPhases.includes(op.phase))return {ok:true,skipped:true};
   const tab=await requestTab(sender),focused=await activeTab();if(tab.id!==focused.id)return {ok:true,skipped:true};
   const id=youtubeId(tab.url),key=`${tab.id}:${id}`,snap=await notify(tab.id,{type:'VIDEO_STATE'}),entry=data.autoHistory?.[key]||{};
-  if(!snap||snap.videoId!==id||snap.paused||snap.ended||snap.ad||snap.rate!==1||!Number.isFinite(snap.duration)||snap.duration-snap.time<2)return {ok:true,skipped:true};
-  if(entry.cancelled||(op.phase==='cancelled'&&op.tabId===tab.id&&op.videoId===id))return {ok:true,skipped:true};
-  const cache=data.captionCache?.[id];if(readyDocument(cache,op,id)&&cache.ranges?.some(([start,end])=>snap.time>=start&&snap.time<end-.15))return {ok:true,cached:true};
-  if(!await hasGrant(tab)){if(op.phase!=='waiting_permission'||op.videoId!==id)await setState({phase:'waiting_permission',tabId:tab.id,videoId:id,message:'도구 모음의 온소리 아이콘을 눌러 현재 영상의 녹음을 허용해 주세요.'},epoch);return {ok:true,waiting:true};}
-  const window=Math.floor(snap.time/60);if(entry.windows?.includes(window))return {ok:true,skipped:true};await rememberAuto(key,{windows:[...(entry.windows||[]),window].slice(-1440)});
-  if(epoch!==operationEpoch)return {ok:true,cancelled:true};return startCapture(data.analysisOptions,{tab},true);
+  if(!snap||snap.videoId!==id||snap.ad||!Number.isFinite(snap.duration))return {ok:true,skipped:true};
+  const doc=readyDocument(data.captionCache?.[id],op,id);if(doc?.metadata.analysis_scope==='full-video')return {ok:true,cached:true};
+  if(entry.cancelled||entry.fullAttempted)return {ok:true,skipped:true};
+  return startFull(data.analysisOptions,{tab},true);
 }
+const consentSender=sender=>{try{const u=new URL(sender.url);return u.origin===new URL(chrome.runtime.getURL('popup.html')).origin&&u.protocol==='chrome-extension:'&&u.host===new URL(chrome.runtime.getURL('popup.html')).host&&u.pathname==='/popup.html';}catch{return false;}};
 async function handle(message,sender){const handleEpoch=operationEpoch;switch(message.type){
   case 'GET_STATE':{const tab=await requestTab(sender).catch(()=>null),data=await chrome.storage.local.get(['settings','captionCache','analysisOptions','localConsent']),id=tab?youtubeId(tab.url):null,operation=await state(),entry=data.captionCache?.[id],document=readyDocument(entry,operation,id);return {ok:true,operation,settings:normalizeSettings(data.settings),analysisOptions:analysisOptions(data.analysisOptions),localEnabled:data.localConsent?.enabled===true,videoId:id,tabId:tab?.id||null,title:tab?.title||'',document,hasStoredDocument:Boolean(entry),awaitingAnalysis:Boolean(entry&&!document)};}
   case 'TOOLBAR_OPEN':{if(!toolbarSender(sender))throw new Error('도구 모음에서 온소리 아이콘을 직접 눌러 주세요.');const tab=await activeTab(),key=`${tab.id}:${youtubeId(tab.url)}`,{autoHistory={}}=await chrome.storage.local.get('autoHistory');await grant(tab);if(autoHistory[key]?.permissionRequired)await rememberAuto(key,{permissionRequired:false,windows:[]});return autoStart(message,sender);}
-  case 'ENABLE_LOCAL':{if(!toolbarSender(sender))throw new Error('도구 모음의 온소리 아이콘에서 사용 설정해 주세요.');const tab=await activeTab();await chrome.storage.local.set({localConsent:{enabled:true,version:1,enabledAt:Date.now()},analysisOptions:analysisOptions(message.options)});await grant(tab);return autoStart(message,sender);}
-  case 'SET_SETTINGS':{const settings=normalizeSettings(message.settings);await chrome.storage.local.set({settings});const op=await state();if(!settings.autoAnalyze&&op.automatic&&busyPhases.includes(op.phase))await cancel('자동 분석을 꺼서 진행 중인 자동 녹음과 분석을 취소했습니다.');return {ok:true,settings};}
+  case 'ENABLE_LOCAL':{if(!consentSender(sender))throw new Error('온소리 패널에서 사용 설정해 주세요.');const tab=await requestTab(sender);await chrome.storage.local.set({localConsent:{enabled:true,version:2,enabledAt:Date.now()},analysisOptions:analysisOptions(message.options)});if(toolbarSender(sender))await grant(tab);return autoStart(message,sender);}
+  case 'SET_SETTINGS':{const settings=normalizeSettings(message.settings);await chrome.storage.local.set({settings});const op=await state();if(!settings.autoAnalyze&&op.automatic&&busyPhases.includes(op.phase))await cancel('자동 분석을 꺼서 진행 중인 분석을 취소했습니다.');return {ok:true,settings};}
   case 'SET_ANALYSIS_OPTIONS':{const options=analysisOptions(message.options);await chrome.storage.local.set({analysisOptions:options});return {ok:true,options};}
   case 'HEALTH':return {ok:true,health:{status:'ok',message:'AI 모델은 첫 분석 때 내려받아 Chrome에 보관합니다. 오디오와 선택한 화면은 기기 안에서 처리합니다.'}};
-  case 'ANALYZE_URL':throw new Error('현재 탭의 소리를 최대 60초씩 분석합니다. 자막 만들기를 눌러 주세요.');
+  case 'ANALYZE_URL':return startFull(message.options,sender);
   case 'AUTO_START':return autoStart(message,sender);
-  case 'START_CAPTURE':{const tab=await requestTab(sender);await rememberAuto(`${tab.id}:${youtubeId(tab.url)}`,{cancelled:false});return startCapture(message.options,sender);}
+  case 'START_CAPTURE':{const tab=await requestTab(sender);await rememberAuto(`${tab.id}:${youtubeId(tab.url)}`,{cancelled:false,fullAttempted:true});return startCapture(message.options,sender);}
   case 'STOP_CAPTURE':await stopCapture();return {ok:true};
   case 'CANCEL':await cancel();return {ok:true};
-  case 'REPLAY_CAPTURE':{const op=await state(),tab=await requestTab(sender);if(op.phase!=='done'||!op.capture||!Number.isFinite(op.startTime)||tab.id!==op.tabId||youtubeId(tab.url)!==op.videoId)throw new Error('분석이 완료된 같은 영상에서 다시 보기 해 주세요.');const result=await notify(op.tabId,{type:'VIDEO_SEEK',videoId:op.videoId,time:op.startTime});if(!result?.ok)throw new Error(result?.error||'YouTube 페이지를 새로고침해 주세요.');return {ok:true};}
+  case 'REPLAY_CAPTURE':{const op=await state(),tab=await requestTab(sender);if(op.phase!=='done'||!Number.isFinite(op.startTime)||tab.id!==op.tabId||youtubeId(tab.url)!==op.videoId)throw new Error('분석이 완료된 같은 영상에서 다시 보기 해 주세요.');const result=await notify(op.tabId,{type:'VIDEO_SEEK',videoId:op.videoId,time:op.startTime});if(!result?.ok)throw new Error(result?.error||'YouTube 페이지를 새로고침해 주세요.');return {ok:true};}
   case 'VIDEO_NAVIGATED':{const op=await state();if(sender.tab?.id===op.tabId&&message.videoId!==op.videoId&&busyPhases.includes(op.phase))await cancel('영상이 바뀌어 이전 녹음과 분석을 취소했습니다.');return {ok:true};}
   case 'CAPTURE_INTERRUPTED':{const op=await state();if(sender.tab?.id===op.tabId)await stopCapture(message.reason);return {ok:true};}
   case 'CAPTURE_LEVEL':{const op=await state();if(op.phase==='capturing')await setState({...op,level:{rms:message.rms,peak:message.peak,elapsed:message.elapsed,bytes:message.bytes,silentSeconds:message.silentSeconds}},handleEpoch);return {ok:true};}

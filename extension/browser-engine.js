@@ -11,15 +11,15 @@ export async function browserEngineAvailability(){
   return {available:available.every(Boolean),engine:'browser-wasm',models:MODEL_CONFIG,message:available.every(Boolean)?'설치 프로그램 없이 브라우저 안에서 분석합니다. 첫 실행은 AI 모델을 내려받습니다.':'브라우저 AI 파일이 없습니다. 빌드된 확장프로그램을 설치해 주세요.'};
 }
 
-async function decode(blob,signal){
+async function decode(blob,signal,maxSeconds=MODEL_CONFIG.maxSeconds){
   check(signal);
-  if(!(blob instanceof Blob)||!blob.size||blob.size>MODEL_CONFIG.maxBytes)throw new Error('0~100MB 사이의 녹음 파일이 필요합니다.');
+  if(!(blob instanceof Blob)||!blob.size||blob.size>MODEL_CONFIG.maxBytes)throw new Error('0~100MB 사이의 오디오 파일이 필요합니다.');
   const Audio=globalThis.AudioContext||globalThis.webkitAudioContext;
   if(!Audio)throw new Error('이 브라우저는 오디오 디코딩을 지원하지 않습니다.');
   const context=new Audio({sampleRate:16000});
   try{
     const audio=await context.decodeAudioData(await blob.arrayBuffer());check(signal);
-    if(audio.duration<.2||audio.duration>MODEL_CONFIG.maxSeconds+.5)throw new Error('브라우저 분석은 한 번에 0.2~60초를 지원합니다.');
+    if(audio.duration<.2||audio.duration>maxSeconds+.5)throw new Error(`이 분석은 최대 ${Math.round(maxSeconds/60)}분 오디오를 지원합니다.`);
     let mono=new Float32Array(audio.length);
     for(let ch=0;ch<audio.numberOfChannels;ch++){const channel=audio.getChannelData(ch);for(let i=0;i<mono.length;i++)mono[i]+=channel[i]/audio.numberOfChannels;}
     if(audio.sampleRate!==16000){
@@ -107,12 +107,16 @@ export function subtitleWordGroups(line){
   }).filter(l=>l.text.replace(/[^\p{L}\p{N}]/gu,'').length>=4);
 }
 
-export async function analyzeRecording({blob,videoId=null,title='브라우저 녹음',startTime=0,options={},references=[],frames=[],onProgress,signal}={}){
+export async function analyzeRecording({blob,videoId=null,title='브라우저 녹음',startTime=0,options={},references=[],frames=[],scope='clip',expectedDuration,onProgress,signal}={}){
   check(signal);
   if(typeof startTime!=='number'||!Number.isFinite(startTime)||startTime<0||startTime>86340)throw new Error('녹음 시작 시각이 올바르지 않습니다.');
-  onProgress?.({progress:.02,message:'브라우저에서 녹음 오디오 읽는 중'});
-  const pcm=await decode(blob,signal),result=await infer(pcm,options,onProgress,signal);check(signal);
+  onProgress?.({progress:.02,message:'브라우저에서 오디오 읽는 중'});
+  const full=scope==='full-video';
+  const pcm=await decode(blob,signal,full?MODEL_CONFIG.maxFullSeconds:MODEL_CONFIG.maxSeconds);
+  if(full&&(!Number.isFinite(expectedDuration)||Math.abs(pcm.length/16000-expectedDuration)>Math.max(2,expectedDuration*.01)))throw new Error('전체 오디오의 길이가 영상과 맞지 않아 결과를 적용하지 않았습니다.');
+  const result=await infer(pcm,options,onProgress,signal);check(signal);
   const doc=assembleDocument({pcm,asr:result.asr,windows:result.windows,videoId,title,startTime,options});
+  doc.metadata.analysis_scope=full?'full-video':'clip';
   if(options.use_caption_references!==false){
     applyReferences(doc,references,'native');
     try{

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "온소리 자막 in YouTube",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "YouTube 대사·음악·효과음을 기기 내 AI로 자막화합니다. 별도 프로그램 없이 소리 크기도 구간별 글자 크기로 표현합니다.",
   "options_page": "help.html",
   "homepage_url": "https://github.com/NY-colab/onsori-youtube",
@@ -19,7 +19,8 @@
     "https://*.huggingface.co/*",
     "https://*.xethub.hf.co/*",
     "https://*.hf.co/*",
-    "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/*"
+    "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/*",
+    "https://*.googlevideo.com/*"
   ],
   "background": {
     "service_worker": "worker.js",
@@ -46,6 +47,18 @@
         "https://m.youtube.com/*"
       ],
       "js": [
+        "page-source.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
+      ],
+      "js": [
+        "source-bridge.js",
         "content.js"
       ],
       "run_at": "document_idle"
@@ -67,6 +80,6 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self'; connect-src 'self' data: blob: https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://*.hf.co https://raw.githubusercontent.com"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self'; connect-src https://*.googlevideo.com https://www.youtube.com https://m.youtube.com 'self' data: blob: https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://*.hf.co https://raw.githubusercontent.com"
   }
 }

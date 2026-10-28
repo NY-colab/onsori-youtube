@@ -18,13 +18,13 @@ async function harness(config={}){
   return {elements,messages,state,async click(id){await elements.get(id).click();await tick();},async progress(op){state.operation=op;storageListener({operation:{newValue:op}},'local');await tick();},async change(id){await elements.get(id).listeners.change?.();await tick();}};
 }
 test('popup first use shows disclosure and cannot silently enable or start capture',async()=>{
-  const h=await harness();assert.equal(h.elements.get('setupHelp').hidden,false);assert.equal(h.elements.get('capture').disabled,true);assert.equal(h.elements.get('enableLocal').hidden,false);assert.ok(h.messages.some(m=>m.type==='TOOLBAR_OPEN'));assert.equal(h.messages.some(m=>['START_CAPTURE','ENABLE_LOCAL'].includes(m.type)),false);assert.match(html,/외부 서버로 보내지 않고/);assert.match(html,/모델을 인터넷에서/);
+  const h=await harness();assert.equal(h.elements.get('setupHelp').hidden,false);assert.equal(h.elements.get('analysisControls').hidden,true);assert.equal(h.elements.get('capture').disabled,true);assert.equal(h.elements.get('enableLocal').hidden,false);assert.ok(h.messages.some(m=>m.type==='TOOLBAR_OPEN'));assert.equal(h.messages.some(m=>['START_CAPTURE','ENABLE_LOCAL'].includes(m.type)),false);assert.match(html,/외부 서버로 보내지 않고/);assert.match(html,/모델을 인터넷에서/);
 });
 test('explicit enable carries local analysis options, enables capture and hides consent',async()=>{
-  const h=await harness();h.elements.get('language').value='en';h.elements.get('captureFrames').checked=true;await h.click('enableLocal');const request=h.messages.find(m=>m.type==='ENABLE_LOCAL');assert.equal(request.options.language,'en');assert.equal(request.options.capture_frames,true);assert.equal(request.options.music_detail,true);assert.equal(request.options.audio_captioning,undefined);assert.equal(h.elements.get('capture').disabled,false);assert.equal(h.elements.get('setupHelp').hidden,true);
+  const h=await harness();h.elements.get('language').value='en';h.elements.get('captureFrames').checked=true;await h.click('enableLocal');const request=h.messages.find(m=>m.type==='ENABLE_LOCAL');assert.equal(request.options.language,'en');assert.equal(request.options.capture_frames,true);assert.equal(request.options.music_detail,true);assert.equal(request.options.audio_captioning,undefined);assert.equal(h.elements.get('capture').disabled,false);assert.equal(h.elements.get('setupHelp').hidden,true);assert.equal(h.elements.get('analysisControls').hidden,false);
 });
-test('embedded panel cannot grant toolbar permission or first-use consent',async()=>{
-  const h=await harness({embedded:true});assert.equal(h.elements.get('enableLocal').hidden,true);assert.equal(h.elements.get('consentHint').hidden,false);assert.equal(h.messages.some(m=>m.type==='TOOLBAR_OPEN'),false);assert.match(h.elements.get('captureHint').textContent,/도구 모음/);
+test('embedded panel allows explicit consent without requesting toolbar recording',async()=>{
+  const h=await harness({embedded:true});assert.equal(h.elements.get('enableLocal').hidden,false);assert.equal(h.messages.some(m=>m.type==='TOOLBAR_OPEN'),false);await h.click('enableLocal');assert.ok(h.messages.some(m=>m.type==='ENABLE_LOCAL'));assert.equal(h.messages.some(m=>m.type==='START_CAPTURE'),false);
 });
 test('model progress remains cancellable and completion alone enables export/replay',async()=>{
   const h=await harness({enabled:true});await h.progress({phase:'running',videoId:'abcdefghijk',tabId:7,capture:true,progress:.42,message:'모델 다운로드 42%'});assert.equal(h.elements.get('operationMessage').textContent,'모델 다운로드 42%');assert.equal(h.elements.get('progress').value,.42);assert.equal(h.elements.get('cancel').hidden,false);assert.equal(h.elements.get('capture').disabled,true);assert.equal(h.elements.get('replay').hidden,true);assert.equal(h.elements.get('export').disabled,true);await h.click('cancel');assert.ok(h.messages.some(m=>m.type==='CANCEL'));
@@ -32,4 +32,19 @@ test('model progress remains cancellable and completion alone enables export/rep
 });
 test('AST and optional screen settings persist and bundled help opens',async()=>{
   const h=await harness({enabled:true});h.elements.get('musicDetail').checked=false;await h.change('musicDetail');assert.equal(h.messages.at(-1).type,'SET_ANALYSIS_OPTIONS');assert.equal(h.messages.at(-1).options.music_detail,false);await h.click('studio');assert.ok(h.messages.some(m=>m.type==='OPEN_HELP'));assert.equal(h.messages.some(m=>m.type==='ANALYZE_URL'),false);
+});
+
+test('primary action analyzes the whole video while recording remains an explicit fallback',async()=>{
+  const h=await harness({enabled:true});await h.click('capture');assert.ok(h.messages.some(m=>m.type==='ANALYZE_URL'));assert.equal(h.messages.some(m=>m.type==='START_CAPTURE'),false);
+  await h.progress({phase:'error',videoId:'abcdefghijk',tabId:7,mode:'full',message:'다시 시도해 주세요.'});assert.equal(h.elements.get('capture').disabled,false);assert.equal(h.messages.some(m=>m.type==='START_CAPTURE'),false);
+  await h.click('record');assert.ok(h.messages.some(m=>m.type==='START_CAPTURE'));
+  assert.match(html,/<details class="options"><summary>다른 방법/);assert.doesNotMatch(html,/healthDot|healthText|checkHealth|eyebrow/);
+});
+test('full-video completion offers replay without requiring capture mode',async()=>{
+  const h=await harness({enabled:true});await h.progress({phase:'done',mode:'full',capture:false,videoId:'abcdefghijk',tabId:7});assert.equal(h.elements.get('replay').hidden,false);await h.click('replay');assert.ok(h.messages.some(m=>m.type==='REPLAY_CAPTURE'));
+});
+test('position controls persist immediately and reset to the default center anchor',async()=>{
+  const h=await harness({enabled:true});h.elements.get('positionX').value='0';h.elements.get('positionY').value='100';await h.elements.get('positionX').listeners.input();await tick();
+  let request=h.messages.findLast(m=>m.type==='SET_SETTINGS');assert.equal(request.settings.positionX,0);assert.equal(request.settings.positionY,100);assert.equal(h.elements.get('positionXValue').textContent,'0%');assert.match(h.elements.get('positionSample').style.left,/clamp/);
+  await h.click('resetPosition');request=h.messages.findLast(m=>m.type==='SET_SETTINGS');assert.equal(request.settings.positionX,50);assert.equal(request.settings.positionY,88);
 });

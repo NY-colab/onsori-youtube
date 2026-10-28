@@ -1,3 +1,15 @@
+# 0.3.0: 전체 영상 분석과 간결한 패널
+
+기본 경로는 `page-source.js`(MAIN) → `source-bridge.js`(ISOLATED) → worker의 `ANALYZE_URL` → offscreen의 `FULL_ANALYZE`입니다. 현재 영상 ID를 확인한 뒤 YouTube가 제공한 직접 audio/mp4 또는 audio/webm 주소만 선택합니다. googlevideo.com의 HTTPS /videoplayback만 허용하며 자격 증명·외부 리디렉션·원격 코드 실행·서명 해독은 사용하지 않습니다. 전체 오디오를 100MB 이하로 스트리밍 수신하고, 20분 이하 길이와 영상 길이 일치를 검증합니다. 기존 Whisper의 겹치는 8초 창과 AST의 2초 창으로 전체 PCM을 분석하며, 영상 전체의 같은 RMS 기준으로 cue 크기를 산정합니다. 모델 세션은 대사/음향 단계별 한 번만 생성합니다.
+
+현재 영상에 제공되는 json3 원래 자막을 읽을 수 있으면 같은 시각의 대사를 대조합니다. 화면 이미지 OCR은 선택한 탭 녹음에만 적용됩니다. 전체 오디오나 원래 자막을 얻을 수 없는 경우가 있으며, 특히 원래 자막이 없는 영상은 대사 교정을 보장할 수 없습니다. 전체 오디오 오류는 명시하며 구간 녹음으로 자동 전환하지 않습니다. 새 영상 자동 시도는 한 번이고 취소/실패 후에는 수동 재시도합니다. 기존 60초 탭 녹음은 보조 경로로 유지합니다.
+
+자막은 완료 결과를 한 번에 게시합니다. X/Y는 영상 안 자막 상자의 중심 백분율(기본 50/88)이며, 실제 상자 크기를 측정하여 영상 경계 안에 둡니다. 한 cue의 글자 크기는 기존처럼 고정합니다.
+
+검증: 자동 테스트와 격리 UI 렌더. 사용자의 Chrome은 다른 확장 UI로 자동 조작이 차단되어 v0.3.0의 실제 YouTube 전체 다운로드 → AI → 자막 연속 검증은 미완료입니다. 아래는 이전 버전의 검증 이력입니다.
+
+---
+
 # Browser-only inference
 
 `extension/browser-engine.js` exports `analyzeRecording({blob, videoId, title,

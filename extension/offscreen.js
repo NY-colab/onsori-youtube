@@ -1,4 +1,5 @@
 import {analyzeRecording} from './browser-engine.js';
+import {mediaUrl,captionUrl,boundedDownload,parseCaptionReferences,FULL_LIMITS} from './full-source.js';
 let current;
 async function send(session,message){if(current!==session||session.discarded)return null;try{return await chrome.runtime.sendMessage({...message,captureId:session.captureId});}catch{return null;}}
 function cleanup(session){
@@ -81,10 +82,32 @@ async function analyze(session){
   }catch(e){if(current===session&&!session.discarded)await fail(session,e.name==='AbortError'?'분석을 취소했습니다.':e.message||'이 기기에서 소리를 분석하지 못했습니다.');}
   finally{clearInterval(session.keepaliveTimer);session.controller=null;session.analyzing=false;}
 }
+async function analyzeFull(message){
+  discard(current);
+  const session={captureId:message.captureId,analyzing:true,chunks:[],controller:new AbortController()};current=session;
+  const source=message.source,signal=session.controller.signal;
+  let progress={progress:0,message:'영상 전체 오디오를 가져옵니다.'};
+  const report=update=>{progress={...progress,...update};return send(session,{type:'ANALYSIS_PROGRESS',...progress});};
+  session.keepaliveTimer=setInterval(()=>report({}),15000);
+  try{
+    if(!mediaUrl(source?.url)||!Number.isFinite(source.duration)||source.duration<=0||source.duration>FULL_LIMITS.seconds)throw new Error('전체 오디오 요청이 올바르지 않습니다.');
+    const blob=await boundedDownload(source.url,{signal,onProgress:(bytes,total)=>report({progress:total ? .05*bytes/total : 0,message:`전체 오디오 받는 중 · ${(bytes/1048576).toFixed(1)} MB${total?' / '+(total/1048576).toFixed(1)+' MB':''}`})});
+    let references=[];
+    if(message.options?.use_caption_references!==false&&captionUrl(source.track?.url,source.videoId)){
+      try{const data=await boundedDownload(source.track.url,{signal,maxBytes:2*1024*1024});references=parseCaptionReferences(JSON.parse(await data.text()),source.videoId,source.duration);}catch(e){if(signal.aborted)throw e;}
+    }
+    if(current!==session||signal.aborted)return;
+    const document=await analyzeRecording({blob,videoId:source.videoId,title:source.title,startTime:0,scope:'full-video',expectedDuration:source.duration,options:{...message.options,capture_frames:false},references,frames:[],onProgress:update=>report({...update,progress:.05+.95*update.progress}),signal});
+    if(current!==session||signal.aborted)return;
+    const result=await send(session,{type:'ANALYSIS_COMPLETE',document});if(!result?.ok)throw new Error(result?.error||'전체 자막을 저장하지 못했습니다.');session.completed=true;
+  }catch(e){if(current===session&&!session.discarded)await fail(session,e.message||'전체 분석을 완료하지 못했습니다. 다른 방법에서 탭 녹음을 선택해 주세요.');}
+  finally{clearInterval(session.keepaliveTimer);session.analyzing=false;session.controller=null;}
+}
 chrome.runtime.onMessage.addListener((message,sender,respond)=>{
   if(message.target!=='offscreen')return;
   (async()=>{
     switch(message.type){
+      case 'FULL_ANALYZE':void analyzeFull(message);break;
       case 'GET_SESSION':return {ok:true,captureId:current?.captureId,discarded:current?.discarded===true,failed:current?.failed===true,preparing:current?.preparing===true,analyzing:current?.analyzing===true,recording:current?.recorder?.state==='recording'};
       case 'CAPTURE_PREPARE':await prepare(message);break;
       case 'CAPTURE_RECORD':

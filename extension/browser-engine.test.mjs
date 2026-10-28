@@ -82,3 +82,28 @@ test('OCR frame sampling validates binding, JPEG bounds and repeated-observation
 test('aborted job never decodes or downloads models',async()=>{
   const controller=new AbortController();controller.abort();await assert.rejects(analyzeRecording({blob:new Blob(['none']),signal:controller.signal}),{name:'AbortError'});
 });
+test('full-video engine passes all 361 seconds to inference, while clip and truncated audio fail closed',async()=>{
+  const originalAudio=Object.getOwnPropertyDescriptor(globalThis,'AudioContext'),originalWorker=Object.getOwnPropertyDescriptor(globalThis,'Worker');
+  let duration=361,workers=0,terminated=0,closed=0,receivedSamples=0;
+  class AudioMock{
+    async decodeAudioData(){const pcm=new Float32Array(duration*16000).fill(.1);return {duration,length:pcm.length,sampleRate:16000,numberOfChannels:1,getChannelData:()=>pcm};}
+    async close(){closed++;}
+  }
+  class WorkerMock{
+    constructor(){workers++;}
+    postMessage(message){receivedSamples=message.pcm.byteLength/4;queueMicrotask(()=>this.onmessage({data:{type:'result',asr:{text:'마지막 대사입니다',chunks:[{text:'마지막 대사입니다',timestamp:[357,361]}]},windows:[]}}));}
+    terminate(){terminated++;}
+  }
+  Object.defineProperty(globalThis,'AudioContext',{configurable:true,value:AudioMock});Object.defineProperty(globalThis,'Worker',{configurable:true,value:WorkerMock});
+  try{
+    const args={blob:new Blob(['encoded audio']),videoId,options:{event_detection:false,capture_frames:false},scope:'full-video',expectedDuration:361};
+    const result=await analyzeRecording(args);
+    assert.equal(receivedSamples,361*16000);assert.equal(result.duration,361);assert.equal(result.metadata.analysis_scope,'full-video');assert.equal(result.cues.at(-1).end,361);assert.equal(workers,1);assert.equal(terminated,1);
+    await assert.rejects(analyzeRecording({...args,scope:'clip'}),/최대 1분/);
+    duration=60;await assert.rejects(analyzeRecording(args),/길이가 영상과 맞지/);
+    assert.equal(workers,1);assert.equal(closed,3);
+  }finally{
+    if(originalAudio)Object.defineProperty(globalThis,'AudioContext',originalAudio);else delete globalThis.AudioContext;
+    if(originalWorker)Object.defineProperty(globalThis,'Worker',originalWorker);else delete globalThis.Worker;
+  }
+});
