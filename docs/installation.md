@@ -1,3 +1,5 @@
+> 이 문서는 이전 **0.1.1 Windows 설치형** 전용입니다. 현재 브라우저 버전은 [README](../README.md), 기존 사용자 업데이트는 [0.3.3 안내](update.md)를 보세요.
+
 # Windows 간편 설치
 
 `OnSori-Setup.exe`를 실행하고 **온소리 설치**를 누릅니다. Windows 10/11 x64용이며 온소리는 사용자 폴더에 설치됩니다. Microsoft Visual C++ 실행 구성요소가 없으면 공식 설치 파일을 내려받아 서명을 확인한 뒤 실행하므로, Windows 설치 승인이나 재시작이 필요할 수 있습니다. [Microsoft 공식 안내](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/) 설치 위치는 `%LOCALAPPDATA%\OnSori`입니다. 설치 중 다운로드와 모델 검사가 끝나면 Chrome 등록 안내가 표시됩니다.

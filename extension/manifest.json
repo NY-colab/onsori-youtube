@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "온소리 자막 in YouTube",
-  "version": "0.3.0",
+  "version": "0.3.3",
   "description": "YouTube 대사·음악·효과음을 기기 내 AI로 자막화합니다. 별도 프로그램 없이 소리 크기도 구간별 글자 크기로 표현합니다.",
   "options_page": "help.html",
   "homepage_url": "https://github.com/NY-colab/onsori-youtube",
@@ -69,9 +69,10 @@
       "resources": [
         "core.js",
         "panel.js",
-        "popup.html",
         "native-captions.js",
-        "screen-frames.js"
+        "screen-frames.js",
+        "controls.js",
+        "panel-template.js"
       ],
       "matches": [
         "https://www.youtube.com/*",

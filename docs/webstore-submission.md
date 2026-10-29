@@ -1,12 +1,12 @@
-# 웹스토어 제출 자료 · 0.3.0
+# 웹스토어 제출 자료 · 0.3.3
 
 현재 상태: **미제출**. GitHub 공개, ZIP 생성, 테스트 통과는 Chrome 웹스토어 제출·승인과 다릅니다. 확장 ID나 승인 URL은 실제 대시보드 결과를 받은 뒤에만 기록합니다.
 
 ## 제출물
 
-- `OnSori-Chrome-WebStore-0.3.0.zip`: 브라우저 확장만 포함합니다. ZIP 최상위에 manifest.json이 있습니다. EXE나 Python 소스 ZIP을 올리지 마세요.
+- `OnSori-Chrome-WebStore-0.3.3.zip`: 브라우저 확장만 포함합니다. ZIP 최상위에 manifest.json이 있습니다. EXE나 Python 소스 ZIP을 올리지 마세요.
 - `store-icon-128.png`: 128×128 스토어 아이콘.
-- `screenshot-01-start.png`: 이전 0.2.0 시작 안내 화면입니다. 0.3.0 실제 Chrome 검수 후 현재 화면으로 교체해야 하며, 그대로 제출하지 않습니다.
+- `screenshot-01-start.png`: 현재 0.3.3에 포함된 실제 help.html 시작 안내 화면을 1280×800으로 렌더한 이미지입니다. YouTube 분석 화면으로 오인하지 않습니다.
 - `webstore-listing.json`: 한국어 설명, 단일 목적, 권한 사유, 데이터 처리, 심사자 실행 안내의 원문.
 - `등록도우미.html`: 위 문구 15개를 항목별 복사 버튼으로 옮길 수 있는 로컬 안내 화면입니다. 스토어 업로드 ZIP에는 넣지 않습니다.
 - 공개 개인정보처리방침: https://github.com/NY-colab/onsori-youtube/blob/main/docs/privacy-browser.md
@@ -34,3 +34,7 @@ Google 로그인·본인 인증·개발자 약관 동의·계정 사실 확인�
 - [개인정보 필드](https://developer.chrome.com/docs/webstore/cws-dashboard-privacy)
 - [로컬 처리도 공개해야 하는 사용자 데이터 FAQ](https://developer.chrome.com/docs/webstore/program-policies/user-data-faq)
 - [MV3 원격 코드 요건](https://developer.chrome.com/docs/webstore/program-policies/mv3-requirements)
+
+## 2026-10-29 등록 시도
+
+Chrome 새 탭 열기 요청은 `Not allowed`로 거부됐습니다. 사용자가 연 웹스토어 등록 탭을 대상으로 다시 확인했으나 `The extensions gallery cannot be scripted.`로 접근이 차단됐습니다. 우회 조작하지 않았고 업로드·심사 제출은 수행하지 않았습니다. 현재 탭 제목은 개발자 계약이고 URL은 `/webstore/devconsole/register`로 확인됐습니다. 이미 등록한 다른 Google 계정이 있다면 그 계정인지 먼저 확인해야 합니다. 실제 개발자 계약·본인 인증·등록비 결제는 계정 소유자가 직접 처리합니다.

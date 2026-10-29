@@ -17,7 +17,7 @@ ALLOWED = {'.js', '.mjs', '.html', '.css', '.png', '.ico', '.wasm', '.json', '.t
 def main():
     manifest = json.loads((EXTENSION / 'manifest.json').read_text('utf-8'))
     assert manifest['manifest_version'] == 3
-    assert manifest['version'] == '0.3.0'
+    assert manifest['version'] == '0.3.3'
     assert set(manifest['permissions']) == {'storage', 'activeTab', 'tabCapture', 'offscreen'}
     assert len(manifest['description']) <= 132
     assert not any('127.0.0.1' in x or '<all_urls>' in x for x in manifest['host_permissions'])

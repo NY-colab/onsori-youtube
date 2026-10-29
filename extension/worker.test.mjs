@@ -7,12 +7,25 @@ import {selectFullSource} from './full-source.js';
 const baseDoc={schema_version:'1.0',video_id:'abcdefghijk',title:'영상',duration:30,cues:[{id:'a',start:12,end:14,text:'분석 결과',kind:'speech',scale:1,dbfs:null,relative_db:null,confidence:null,source:'test',review_required:true}],warnings:[],metadata:{audio_analyzed:true,partial:false}};
 const toolbar={url:'chrome-extension://test/popup.html'},recorder={url:'chrome-extension://test/offscreen.html'},video={tab:{id:7,url:'https://www.youtube.com/watch?v=abcdefghijk'}};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
+
+test('background panel setup succeeds when foreground tab is not YouTube or no tab is active',async()=>{
+  for(const focusedTabs of [[],[{id:42,url:'chrome://extensions/'}]]){
+    const h=await harness({focusedTabs});
+    const sender={...video,id:'test',frameId:0,url:video.tab.url};
+    const result=await h.send({type:'ENABLE_LOCAL'},sender);
+    assert.equal(result.ok,true);assert.equal(result.skipped,true);
+    assert.equal(h.storage.localConsent.enabled,true);
+    assert.equal(h.messages.some(m=>m.type==='FULL_ANALYZE'),false);
+    assert.equal((await h.send({type:'ANALYZE_URL'},sender)).ok,true);
+    assert.equal(h.storage.operation.mode,'full');
+  }
+});
 function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};}
 async function harness(config={}){
   let receiver,onUpdated,onRemoved,url=config.url||'https://www.youtube.com/watch?v=abcdefghijk';
   const storage=structuredClone(config.storage||{}),session=structuredClone(config.session||{}),messages=[],writes=[],network=[];
   const area=data=>({async get(keys){if(config.readGate&&keys==='captionCache'&&storage.operation?.phase==='running')await config.readGate;return Object.fromEntries((typeof keys==='string'?[keys]:keys).map(k=>[k,structuredClone(data[k])]));},async set(value){if(config.finalWriteGate&&value.operation?.phase==='done')await config.finalWriteGate;Object.assign(data,structuredClone(value));writes.push(structuredClone(value));}});
-  const chrome={storage:{local:area(storage),session:area(session)},runtime:{getURL:file=>'chrome-extension://test/'+file,async getContexts(){return [];},async sendMessage(message){messages.push(message);if(message.type==='GET_SESSION')return config.activeSession||{ok:true};if(message.type==='CAPTURE_PREPARE'&&config.prepareGate)await config.prepareGate;if(message.type==='CAPTURE_RECORD')return {ok:true,startedAt:Date.now(),startTime:message.startTime+.04};return {ok:true};},onMessage:{addListener(fn){receiver=fn;}}},tabs:{async get(id){if(config.closedTab)throw new Error('No tab');return {id,url:id===9?'https://www.youtube.com/watch?v=zzzzzzzzzzz':url,title:'영상'};},async query(){return [{id:7,url,title:'영상'}];},async sendMessage(id,payload){messages.push({...payload,tabId:id});if(payload.type==='GET_FULL_SOURCE'){if(config.sourceGate)await config.sourceGate;return config.noSource?null:{videoId:core.youtubeId(url),title:'영상',duration:config.duration??300,formats:[{url:'https://r1.googlevideo.com/videoplayback?id=test',mimeType:'audio/mp4',bitrate:64000}],tracks:[]};}if(payload.type==='NATIVE_CAPTIONS')return {references:config.references||[],frames:config.frames||[]};if(['VIDEO_STATE','PREPARE_CAPTURE'].includes(payload.type))return {videoId:id===9?'zzzzzzzzzzz':core.youtubeId(url),time:config.time??10,duration:config.duration??300,ended:false,paused:payload.type==='VIDEO_STATE'&&Boolean(config.paused),rate:payload.type==='VIDEO_STATE'?(config.rate||1):1,ad:Boolean(config.ad),sampledAt:Date.now(),title:'영상'};return {ok:true};},async create(o){messages.push({type:'TAB_CREATE',...o});},onUpdated:{addListener(fn){onUpdated=fn;}},onRemoved:{addListener(fn){onRemoved=fn;}}},tabCapture:{async getMediaStreamId(options){messages.push({type:'GET_STREAM',...options});if(config.permissionDenied)throw new Error('Extension has not been invoked for the current page');return 'stream';}},offscreen:{async createDocument(o){messages.push({type:'CREATE_OFFSCREEN',...o});}}};
+  const chrome={storage:{local:area(storage),session:area(session)},runtime:{id:'test',getURL:file=>'chrome-extension://test/'+file,async getContexts(){return [];},async sendMessage(message){messages.push(message);if(message.type==='GET_SESSION')return config.activeSession||{ok:true};if(message.type==='CAPTURE_PREPARE'&&config.prepareGate)await config.prepareGate;if(message.type==='CAPTURE_RECORD')return {ok:true,startedAt:Date.now(),startTime:message.startTime+.04};return {ok:true};},onMessage:{addListener(fn){receiver=fn;}}},tabs:{async get(id){if(config.closedTab)throw new Error('No tab');return {id,url:id===9?'https://www.youtube.com/watch?v=zzzzzzzzzzz':url,title:'영상'};},async query(){return config.focusedTabs??[{id:7,url,title:'영상'}];},async sendMessage(id,payload){messages.push({...payload,tabId:id});if(payload.type==='GET_FULL_SOURCE'){if(config.sourceGate)await config.sourceGate;return config.noSource?null:{videoId:core.youtubeId(url),title:'영상',duration:config.duration??300,formats:config.emptyFormats?[]:[{url:'https://r1.googlevideo.com/videoplayback?id=test',mimeType:'audio/mp4',bitrate:64000}],tracks:[]};}if(payload.type==='LOOKUP_FULL_AUDIO'){if(config.lookupGate)await config.lookupGate;return {ok:true,source:{videoId:config.wrongLookup?'zzzzzzzzzzz':core.youtubeId(url),duration:300,url:'https://r1.googlevideo.com/videoplayback?id=fresh',mimeType:'audio/mp4',bytes:4}};}if(payload.type==='NATIVE_CAPTIONS')return {references:config.references||[],frames:config.frames||[]};if(['VIDEO_STATE','PREPARE_CAPTURE'].includes(payload.type))return {videoId:id===9?'zzzzzzzzzzz':core.youtubeId(url),time:config.time??10,duration:config.duration??300,ended:false,paused:payload.type==='VIDEO_STATE'&&Boolean(config.paused),rate:payload.type==='VIDEO_STATE'?(config.rate||1):1,ad:Boolean(config.ad),sampledAt:Date.now(),title:'영상'};return {ok:true};},async create(o){messages.push({type:'TAB_CREATE',...o});},onUpdated:{addListener(fn){onUpdated=fn;}},onRemoved:{addListener(fn){onRemoved=fn;}}},tabCapture:{async getMediaStreamId(options){messages.push({type:'GET_STREAM',...options});if(config.permissionDenied)throw new Error('Extension has not been invoked for the current page');return 'stream';}},offscreen:{async createDocument(o){messages.push({type:'CREATE_OFFSCREEN',...o});}}};
   let source=await readFile(new URL('./worker.js',import.meta.url),'utf8');source="const {normalizeSettings,validateDocument,youtubeId,readyDocument}=core;\n"+source.replace(/^import[^\n]+\n/gm,'');
   vm.runInNewContext(source,{core,selectFullSource,URL,chrome,console,Date,JSON,Number,Object,Array,String,Math,crypto,fetch:(...args)=>{network.push(args);throw new Error('network forbidden');}});await tick();
   const send=(message,sender=toolbar)=>new Promise(resolve=>receiver(message,sender,resolve));
@@ -102,4 +115,33 @@ test('whole result is complete and atomic, and wrong length/clip result cannot p
 });
 test('cancel while full source pending cannot launch a late download',async()=>{
  const gate=deferred(),h=await harness({sourceGate:gate.promise}),pending=h.send({type:'ENABLE_LOCAL'});await tick();await h.send({type:'CANCEL'});gate.resolve();await pending;assert.equal(h.storage.operation.phase,'cancelled');assert.equal(h.messages.some(m=>m.type==='FULL_ANALYZE'),false);
+});
+
+test('direct panel consent accepts only own top-level YouTube content script',async()=>{
+  const good={id:'test',frameId:0,url:'https://www.youtube.com/watch?v=abcdefghijk',...video};
+  for(const overrides of [{id:'foreign'},{frameId:2},{url:'https://example.com/watch?v=abcdefghijk'}]){
+    const h=await harness();assert.equal((await h.send({type:'ENABLE_LOCAL'},{...good,...overrides})).ok,false);
+    assert.equal(h.storage.localConsent,undefined);
+  }
+  const h=await harness();assert.equal((await h.send({type:'ENABLE_LOCAL'},good)).ok,true);
+  assert.equal(h.storage.localConsent.enabled,true);assert.equal(h.storage.operation.mode,'full');
+  assert.equal(h.messages.some(m=>m.type==='GET_STREAM'),false);
+});
+
+test('empty streaming formats still launch direct lookup while video is paused',async()=>{
+ const h=await harness({emptyFormats:true,paused:true});await h.send({type:'ENABLE_LOCAL'});
+ assert.equal(h.storage.operation.phase,'running');const m=h.messages.find(m=>m.type==='FULL_ANALYZE');assert.equal(m.source.url,null);assert.equal(m.source.duration,300);
+ assert.equal(h.messages.some(m=>['GET_STREAM','PREPARE_CAPTURE','CAPTURE_RECORD','VIDEO_SEEK'].includes(m.type)),false);
+});
+
+test('audio lookup runs in the owning YouTube tab and rejects foreign, stale and mismatched requests',async()=>{
+ const h=await harness();await h.send({type:'ENABLE_LOCAL'});const captureId=h.storage.operation.captureId;
+ assert.equal((await h.send({type:'FULL_AUDIO_LOOKUP',captureId},video)).ok,false);
+ assert.equal((await h.send({type:'FULL_AUDIO_LOOKUP',captureId:'stale'},recorder)).ignored,true);
+ const result=await h.send({type:'FULL_AUDIO_LOOKUP',captureId},recorder);assert.equal(result.ok,true);assert.equal(result.source.transport,'youtube-page-visionos');assert.equal(h.messages.find(m=>m.type==='LOOKUP_FULL_AUDIO').tabId,7);assert.equal(h.network.length,0);
+ const bad=await harness({wrongLookup:true});await bad.send({type:'ENABLE_LOCAL'});assert.equal((await bad.send({type:'FULL_AUDIO_LOOKUP',captureId:bad.storage.operation.captureId},recorder)).ok,false);
+});
+test('cancellation aborts a pending page lookup and discards its late source',async()=>{
+ const gate=deferred(),h=await harness({lookupGate:gate.promise});await h.send({type:'ENABLE_LOCAL'});const captureId=h.storage.operation.captureId;
+ const pending=h.send({type:'FULL_AUDIO_LOOKUP',captureId},recorder);await tick();await h.send({type:'CANCEL'});gate.resolve();assert.equal((await pending).ok,false);assert.ok(h.messages.some(m=>m.type==='CANCEL_AUDIO_LOOKUP'&&m.captureId===captureId));assert.equal(h.storage.operation.phase,'cancelled');
 });

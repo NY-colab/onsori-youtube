@@ -1,5 +1,6 @@
 // Reproducible vendor build. Run npm ci --prefix browser-build --ignore-scripts first.
 // Executable code is copied from the lockfile-pinned npm packages; never a CDN.
+import './build_content.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';

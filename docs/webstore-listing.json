@@ -1,6 +1,6 @@
 {
   "publication_status": "not_submitted",
-  "version": "0.3.0",
+  "version": "0.3.3",
   "language": "ko",
   "name": "온소리 자막 in YouTube",
   "summary": "YouTube 대사·음악·효과음을 기기 내 AI로 자막화합니다. 별도 프로그램 없이 소리 크기도 구간별 글자 크기로 표현합니다.",
@@ -28,5 +28,5 @@
     "only_single_purpose": true,
     "not_creditworthiness": true
   },
-  "reviewer_instructions": "No companion program or account is required. On a YouTube watch page, use the embedded OnSori panel and enable on-device analysis. The default is full-video analysis from the direct audio URL exposed by the current player (up to 20 minutes / 100MB); no playing or tab capture is necessary. Some YouTube players do not expose a direct URL or reject the download; this shows an explicit error and NEVER starts recording automatically. Under '다른 방법 · 분석 설정', users may explicitly choose the 60-second tab recording fallback after invoking the toolbar action. X/Y percentage positions and font options are under '자막 모양 · 파일 관리'. Models download on first inference. Caption references are used when available; screen OCR applies only to optional tab recording. Only completed, validated results are displayed. No localhost server or remote executable code is used. Full-video live end-to-end testing remains unverified in this build; tests cover source selection, completion/cancellation, rendering geometry and mocked pipeline integration."
+  "reviewer_instructions": "No companion program or account is required. On a YouTube watch page, use the embedded OnSori panel and enable on-device analysis. The default is full-video analysis from the direct audio URL exposed by the current player (up to 20 minutes / 100MB); no playing or tab capture is necessary. Some YouTube players do not expose a direct URL or reject the download; this shows an explicit error and NEVER starts recording automatically. Under '다른 방법 · 분석 설정', users may explicitly choose the 60-second tab recording fallback after invoking the toolbar action. X/Y percentage positions and font options are under '자막 모양 · 파일 관리'. Models download on first inference. Caption references are used when available; screen OCR applies only to optional tab recording. Only completed, validated results are displayed. No localhost server or remote executable code is used. Version 0.3.3 was tested in installed Chrome on https://www.youtube.com/watch?v=-wbEQJ_ZXyk (361 seconds), while paused: full audio retrieval, local inference and 119 newly generated cues completed without capture. X/Y persistence was verified. 110 automated checks pass. ASR errors and generic music descriptions remain possible; CPU inference may take many minutes. If the page supplies no direct URL, a bundled yt-dlp-derived public anonymous player lookup is attempted in the YouTube content script; account cookies are omitted and no remote code is loaded."
 }
