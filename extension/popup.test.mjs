@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
 import * as core from './core.js';
 const html=await readFile(new URL('./popup.html',import.meta.url),'utf8');
-const source=(await readFile(new URL('./controls.js',import.meta.url),'utf8')).replace(/^import[^\n]+\n/,'const {normalizeSettings,parseDocument,subtitleFile}=core;\n').replace('export function mountControls','function mountControls')+'\nmountControls(document,{embedded:embeddedTest});';
+const source=(await readFile(new URL('./controls.js',import.meta.url),'utf8')).replace(/^import[^\n]+\n/,'const {normalizeSettings,parseDocument,subtitleFile}=core;\n').replace(/^export function /gm,'function ')+'\nmountControls(document,{embedded:embeddedTest});';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function harness(config={}){
   const elements=new Map(),messages=[];
@@ -35,6 +35,19 @@ test('embedded controls reject synthetic page interactions while accepting real 
     h.rootListeners[type](event);assert.equal(prevented,true);assert.equal(stopped,true);
     prevented=stopped=false;h.rootListeners[type]({...event,isTrusted:true});assert.equal(prevented,false);assert.equal(stopped,false);
   }
+});
+test('embedded controls keep their own keys from YouTube shortcuts and pass the rest through',async()=>{
+  const h=await harness({embedded:true}),el=id=>h.elements.get(id);
+  const press=(target,key)=>{let stopped=false;for(const type of ['keydown','keypress','keyup'])h.rootListeners[type]({target,key,stopPropagation(){stopped=true;}});return stopped;};
+  const tagged=(id,tag)=>({...el(id),tagName:tag});
+  for(const key of ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown'])assert.equal(press(tagged('positionX','INPUT'),key),true,key);
+  assert.equal(press(tagged('positionY','INPUT'),'ArrowDown'),true);
+  for(const key of ['k','f','m','5','j'])assert.equal(press(tagged('positionX','INPUT'),key),false,key);
+  for(const key of ['1','6','ArrowUp','Backspace','k'])assert.equal(press(tagged('baseSize','INPUT'),key),true,key);
+  assert.equal(press(tagged('infoLevel','SELECT'),'ArrowDown'),true);
+  assert.equal(press(tagged('showSpeech','INPUT'),' '),true);assert.equal(press(tagged('showSpeech','INPUT'),'ArrowRight'),false);
+  assert.equal(press(tagged('capture','BUTTON'),' '),true);assert.equal(press(tagged('capture','BUTTON'),'Enter'),true);assert.equal(press(tagged('capture','BUTTON'),'k'),false);
+  assert.equal(press({tagName:'SUMMARY'},' '),true);assert.equal(press({tagName:'DIV'},'ArrowRight'),false);assert.equal(press({tagName:'P'},' '),false);
 });
 test('model progress remains cancellable and completion alone enables export/replay',async()=>{
   const h=await harness({enabled:true});await h.progress({phase:'running',videoId:'abcdefghijk',tabId:7,capture:true,progress:.42,message:'모델 다운로드 42%'});assert.equal(h.elements.get('operationMessage').textContent,'모델 다운로드 42%');assert.equal(h.elements.get('progress').value,.42);assert.equal(h.elements.get('cancel').hidden,false);assert.equal(h.elements.get('capture').disabled,true);assert.equal(h.elements.get('replay').hidden,true);assert.equal(h.elements.get('export').disabled,true);await h.click('cancel');assert.ok(h.messages.some(m=>m.type==='CANCEL'));

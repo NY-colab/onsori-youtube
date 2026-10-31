@@ -1,5 +1,6 @@
 import {normalizeSettings,youtubeId,readyDocument,activeCues,captionText,updateCaptionSizes,captionPosition,KIND_NAMES} from './core.js';
 import {createYouTubePanel} from './panel.js';
+import {keepControlKeys} from './controls.js';
 import {createCaptionCollector,nativeCaptionText} from './native-captions.js';
 import {createFrameCollector} from './screen-frames.js';
 (async()=>{
@@ -11,7 +12,7 @@ import {createFrameCollector} from './screen-frames.js';
   const safeSend=payload=>chrome.runtime.sendMessage(payload).catch(()=>null);
   const isAd=()=>Boolean(video?.closest('.ad-showing,.ad-interrupting'));
   async function load(id){const token=++loadToken;cacheEntry=null;doc=null;render();const data=await chrome.storage.local.get(['settings','captionCache','operation']);if(token!==loadToken)return;settings=normalizeSettings(data.settings);cacheEntry=id?data.captionCache?.[id]||null:null;operation=data.operation||{phase:'idle'};doc=readyDocument(cacheEntry,operation,id);lastSignature='';render();renderStatus();}
-  function createOverlay(player){host?.remove();host=document.createElement('onsori-captions');Object.assign(host.style,{position:'absolute',inset:'0',zIndex:'2147483000',pointerEvents:'none',display:'block'});root=host.attachShadow({mode:'open'});
+  function createOverlay(player){host?.remove();host=document.createElement('onsori-captions');Object.assign(host.style,{position:'absolute',inset:'0',zIndex:'2147483000',pointerEvents:'none',display:'block'});root=host.attachShadow({mode:'open'});keepControlKeys(root);
     const style=document.createElement('style');style.textContent=`:host{font-family:"Noto Sans KR","Malgun Gothic",Arial,sans-serif;color:white;contain:layout style;pointer-events:none}.captions{position:absolute;transform:translate(-50%,-50%);width:max-content;max-width:90%;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center}.cue{max-width:100%;box-sizing:border-box;background:rgba(9,12,18,.9);border-radius:7px;padding:.23em .55em;line-height:1.45;font-weight:650;white-space:pre-wrap;overflow-wrap:anywhere;text-shadow:0 1px 2px #000;box-shadow:0 2px 14px #0005;border-left:3px solid #b9a8ff}.cue.sound{border-color:#75e1bd;color:#cdffeb}.cue.music{border-color:#e5b6ff;color:#eed3ff}.label{font-size:.56em;font-weight:700;opacity:.78;margin-right:.65em;vertical-align:middle}.review{display:inline-block;font-size:.5em;color:#ffd990;margin-left:.7em;vertical-align:middle}@media(prefers-reduced-motion:no-preference){.cue{animation:appear .12s ease-out}@keyframes appear{from{opacity:.4;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}}`;root.append(style);captionBox=document.createElement('div');captionBox.className='captions';captionBox.setAttribute('role','region');captionBox.setAttribute('aria-label','온소리 접근성 자막');root.append(captionBox);player.append(host);lastSignature='';
     createStatus();renderStatus();
   }

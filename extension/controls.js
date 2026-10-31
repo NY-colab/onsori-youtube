@@ -1,4 +1,15 @@
 import {normalizeSettings,parseDocument,subtitleFile} from './core.js';
+// YouTube sees shadow-DOM key events as coming from our host element, not an input, so a
+// focused control's own keys would also seek, play or change volume. Keep only those keys
+// inside OnSori; every other key, and any key pressed outside OnSori, still reaches YouTube.
+const RANGE_KEYS=new Set(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown']),ACTIVATE_KEYS=new Set([' ','Enter']);
+export function controlOwnsKey(target,key){
+  const tag=target?.tagName,type=String(target?.type||'').toLowerCase();
+  if(tag==='SELECT'||tag==='TEXTAREA'||target?.isContentEditable)return true;
+  if(tag==='INPUT')return type==='range'?RANGE_KEYS.has(key):['checkbox','radio','button','submit','reset','file'].includes(type)?ACTIVATE_KEYS.has(key):true;
+  return (tag==='BUTTON'||tag==='SUMMARY')&&ACTIVATE_KEYS.has(key);
+}
+export function keepControlKeys(root){for(const type of ['keydown','keypress','keyup'])root.addEventListener(type,event=>{if(controlOwnsKey(event.target,event.key))event.stopPropagation();});}
 export function mountControls(root,{embedded=false,onCollapse=()=>{}}={}) {
 const $=id=>root.getElementById(id),fields=['autoAnalyze','enabled','showSpeech','showSound','showMusic','infoLevel','effectStrength','baseSize','offset','positionX','positionY'];let current=null,operation={phase:'idle'},validTab=false,optionsLoaded=false,localEnabled=false,currentVideoId=null,currentTabId=null,pending=false,refreshSequence=0;
 
@@ -8,6 +19,7 @@ if(embedded){
   for(const type of ['click','change','input'])root.addEventListener(type,event=>{
     if(!event.isTrusted&&!(type==='click'&&event.target===$('importFile'))){event.preventDefault();event.stopImmediatePropagation();}
   },true);
+  keepControlKeys(root);
   $('collapsePanel').addEventListener('click',onCollapse);
 }
 async function send(payload){const r=await chrome.runtime.sendMessage(payload);if(!r?.ok)throw new Error(r?.error||'확장 프로그램에 연결되지 않았습니다.');return r;}

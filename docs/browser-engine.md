@@ -90,9 +90,17 @@ heuristic model gates, not calibrated probabilities.
 Whisper may invent speech over music or body sounds. When AST is enabled, a
 candidate is suppressed only if every overlapping classified window has
 Speech/Conversation/Narration scores below 0.05 and supported music/sound scores
-at least 0.65. Rejected ASR and numeric evidence remain in metadata. Mixed or
-uncertain evidence preserves the speech candidate. This conservative heuristic
-can still miss hallucinations or reject quiet speech and requires review.
+at least 0.65. Since 0.3.4 a short candidate (at most 8 letters/digits after
+normalisation) is also suppressed when no overlapping window reaches Speech 0.2,
+whatever the music score: Whisper fills quiet music with stock phrases such as
+"그러니까" or "뭐야". In the `-wbEQJ_ZXyk` evaluation (`eval/`) this removed 20
+such cues, kept every subtitle-backed line (lowest browser Speech 0.395) and
+left five fillers at 0.21–0.36; the threshold was not raised to fit that one
+video. Rejected ASR and numeric evidence remain in metadata, and kept speech
+records `[start, end, max Speech]` in `speech_filter.kept_speech_evidence`.
+Long candidates with weak evidence are preserved. This conservative heuristic
+can still miss hallucinations or reject quiet speech and requires review. A
+leading Whisper speaker-turn hyphen ("- ") is removed from displayed speech.
 Standalone bracketed ASR annotations are also excluded when all overlapping AST
 windows have speech scores below 0.05; annotations with speech evidence survive.
 In addition, a standalone balanced bracket tag of one to three letters without

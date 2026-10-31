@@ -69,7 +69,14 @@ test('AST rejects strong non-speech hallucinations but preserves mixed or unclas
   const pcm=new Float32Array(64000).fill(.1),asr={text:'환각 대사',chunks:[{text:'환각 대사',timestamp:[0,4]}]},window=(speech,music)=>({start:0,end:4,labels:[{label:'Speech',score:speech},{label:'Music',score:music}]});
   const rejected=assembleDocument({pcm,asr,windows:[window(.001,.9)],videoId});assert.equal(rejected.cues.filter(c=>c.kind==='speech').length,0);assert.equal(rejected.metadata.speech_filter.rejected[0].text,'환각 대사');
   assert.equal(assembleDocument({pcm,asr,windows:[window(.2,.9)],videoId}).cues.filter(c=>c.kind==='speech').length,1);
-  assert.equal(assembleDocument({pcm,asr,windows:[window(.001,.3)],videoId}).cues.filter(c=>c.kind==='speech').length,1);
+  // Weak music evidence alone never removes a full sentence.
+  const sentence={text:'바람은 그대로인데 아까보다 훨씬 낫구먼',chunks:[{text:'바람은 그대로인데 아까보다 훨씬 낫구먼',timestamp:[0,4]}]};
+  assert.equal(assembleDocument({pcm,asr:sentence,windows:[window(.001,.3)],videoId}).cues.filter(c=>c.kind==='speech').length,1);
+  // A short stock phrase that no AST window hears as speech is dropped and recorded.
+  const filler={text:'-그러니까.',chunks:[{text:'-그러니까.',timestamp:[0,1]}]},unheard=assembleDocument({pcm,asr:filler,windows:[window(.12,.3)],videoId});
+  assert.equal(unheard.cues.filter(c=>c.kind==='speech').length,0);assert.equal(unheard.metadata.speech_filter.rejected[0].reason,'short text without AST speech evidence');
+  const heard=assembleDocument({pcm,asr:filler,windows:[window(.6,.3)],videoId});
+  assert.equal(heard.cues[0].text,'그러니까.');assert.deepEqual(heard.metadata.speech_filter.kept_speech_evidence,[[0,1,.6]]);
   assert.equal(assembleDocument({pcm,asr,windows:[],videoId,options:{event_detection:false}}).cues.filter(c=>c.kind==='speech').length,1);
   const annotation={text:'(실제 대사입니다.)',chunks:[{text:'(실제 대사입니다.)',timestamp:[0,4]}]};assert.equal(assembleDocument({pcm,asr:annotation,windows:[window(.001,.3)],videoId}).cues.filter(c=>c.kind==='speech').length,0);assert.equal(assembleDocument({pcm,asr:annotation,windows:[window(.2,.9)],videoId}).cues.filter(c=>c.kind==='speech').length,1);
 });
