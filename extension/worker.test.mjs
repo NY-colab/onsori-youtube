@@ -4,9 +4,12 @@ import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
 import * as core from './core.js';
 import {selectFullSource} from './full-source.js';
+import {CLOUD} from './cloud-config.js';
 const baseDoc={schema_version:'1.0',video_id:'abcdefghijk',title:'영상',duration:30,cues:[{id:'a',start:12,end:14,text:'분석 결과',kind:'speech',scale:1,dbfs:null,relative_db:null,confidence:null,source:'test',review_required:true}],warnings:[],metadata:{audio_analyzed:true,partial:false}};
 const toolbar={url:'chrome-extension://test/popup.html'},recorder={url:'chrome-extension://test/offscreen.html'},video={tab:{id:7,url:'https://www.youtube.com/watch?v=abcdefghijk'}};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
+// Only the public cloud availability check may leave the worker in local analysis.
+const uploads=h=>h.network.map(([u,o])=>[String(u),o?.method||'GET']).filter(([u,m])=>!(m==='GET'&&u===`${CLOUD.origin}/v1/availability`));
 
 test('background panel setup succeeds when foreground tab is not YouTube or no tab is active',async()=>{
   for(const focusedTabs of [[],[{id:42,url:'chrome://extensions/'}]]){
@@ -27,7 +30,7 @@ async function harness(config={}){
   const area=data=>({async get(keys){if(config.readGate&&keys==='captionCache'&&storage.operation?.phase==='running')await config.readGate;return Object.fromEntries((typeof keys==='string'?[keys]:keys).map(k=>[k,structuredClone(data[k])]));},async set(value){if(config.finalWriteGate&&value.operation?.phase==='done')await config.finalWriteGate;Object.assign(data,structuredClone(value));writes.push(structuredClone(value));}});
   const chrome={storage:{local:area(storage),session:area(session)},runtime:{id:'test',getURL:file=>'chrome-extension://test/'+file,async getContexts(){return [];},async sendMessage(message){messages.push(message);if(message.type==='GET_SESSION')return config.activeSession||{ok:true};if(message.type==='CAPTURE_PREPARE'&&config.prepareGate)await config.prepareGate;if(message.type==='CAPTURE_RECORD')return {ok:true,startedAt:Date.now(),startTime:message.startTime+.04};return {ok:true};},onMessage:{addListener(fn){receiver=fn;}}},tabs:{async get(id){if(config.closedTab)throw new Error('No tab');return {id,url:id===9?'https://www.youtube.com/watch?v=zzzzzzzzzzz':url,title:'영상'};},async query(){return config.focusedTabs??[{id:7,url,title:'영상'}];},async sendMessage(id,payload){messages.push({...payload,tabId:id});if(payload.type==='GET_FULL_SOURCE'){if(config.sourceGate)await config.sourceGate;return config.noSource?null:{videoId:core.youtubeId(url),title:'영상',duration:config.duration??300,formats:config.emptyFormats?[]:[{url:'https://r1.googlevideo.com/videoplayback?id=test',mimeType:'audio/mp4',bitrate:64000}],tracks:[]};}if(payload.type==='LOOKUP_FULL_AUDIO'){if(config.lookupGate)await config.lookupGate;return {ok:true,source:{videoId:config.wrongLookup?'zzzzzzzzzzz':core.youtubeId(url),duration:300,url:'https://r1.googlevideo.com/videoplayback?id=fresh',mimeType:'audio/mp4',bytes:4}};}if(payload.type==='NATIVE_CAPTIONS')return {references:config.references||[],frames:config.frames||[]};if(['VIDEO_STATE','PREPARE_CAPTURE'].includes(payload.type))return {videoId:id===9?'zzzzzzzzzzz':core.youtubeId(url),time:config.time??10,duration:config.duration??300,ended:false,paused:payload.type==='VIDEO_STATE'&&Boolean(config.paused),rate:payload.type==='VIDEO_STATE'?(config.rate||1):1,ad:Boolean(config.ad),sampledAt:Date.now(),title:'영상'};return {ok:true};},async create(o){messages.push({type:'TAB_CREATE',...o});},onUpdated:{addListener(fn){onUpdated=fn;}},onRemoved:{addListener(fn){onRemoved=fn;}}},tabCapture:{async getMediaStreamId(options){messages.push({type:'GET_STREAM',...options});if(config.permissionDenied)throw new Error('Extension has not been invoked for the current page');return 'stream';}},offscreen:{async createDocument(o){messages.push({type:'CREATE_OFFSCREEN',...o});}}};
   let source=await readFile(new URL('./worker.js',import.meta.url),'utf8');source="const {normalizeSettings,validateDocument,youtubeId,readyDocument}=core;\n"+source.replace(/^import[^\n]+\n/gm,'');
-  vm.runInNewContext(source,{core,selectFullSource,URL,chrome,console,Date,JSON,Number,Object,Array,String,Math,crypto,fetch:(...args)=>{network.push(args);throw new Error('network forbidden');}});await tick();
+  vm.runInNewContext(source,{core,selectFullSource,CLOUD,AbortSignal,URL,chrome,console,Date,JSON,Number,Object,Array,String,Math,crypto,fetch:async(...args)=>{network.push(args);if(config.cloudFetch)return config.cloudFetch(...args);throw new Error('network forbidden');}});await tick();
   const send=(message,sender=toolbar)=>new Promise(resolve=>receiver(message,sender,resolve));
   const enable=()=>{storage.localConsent={enabled:true};return send({type:'START_CAPTURE'});};const complete=(doc=baseDoc,captureId=storage.operation.captureId)=>send({type:'ANALYSIS_COMPLETE',captureId,document:doc},recorder);
   return {storage,session,messages,writes,network,send,enable,complete,navigate(next){url=next;onUpdated(7,{url:next});},reload(){onUpdated(7,{status:'loading'});},close(){onRemoved(7);}};
@@ -42,7 +45,7 @@ test('capture uses browser-only analysis and publishes one atomic final document
   const h=await harness();await h.enable();const id=h.storage.operation.captureId,record=h.messages.find(m=>m.type==='CAPTURE_RECORD');assert.equal(record.options.capture_frames,false);assert.equal(record.startTime,10);
   await h.send({type:'STOP_CAPTURE'});assert.equal(h.storage.operation.phase,'running');await h.send({type:'ANALYSIS_PROGRESS',captureId:id,progress:.4,message:'모델 다운로드 중'},recorder);assert.equal(h.storage.operation.progress,.4);assert.equal((await h.send({type:'GET_STATE'})).document,null);
   await h.complete();const state=await h.send({type:'GET_STATE'});assert.equal(state.operation.phase,'done');assert.equal(state.document.cues[0].text,'분석 결과');assert.deepEqual(h.storage.captionCache.abcdefghijk.ranges,[[10.04,30]]);
-  const publish=h.writes.find(w=>w.operation?.phase==='done');assert.equal(publish.captionCache.abcdefghijk.ready,true);assert.equal(h.network.length,0);
+  const publish=h.writes.find(w=>w.operation?.phase==='done');assert.equal(publish.captionCache.abcdefghijk.ready,true);assert.deepEqual(uploads(h),[]);
 });
 test('language and music options reach full analysis; recording is explicit',async()=>{
   const h=await harness();await h.send({type:'ENABLE_LOCAL',options:{language:'en',music_detail:false,capture_frames:true}});const request=h.messages.find(m=>m.type==='FULL_ANALYZE');assert.equal(request.options.language,'en');assert.equal(request.options.music_detail,false);assert.equal(h.messages.some(m=>m.type==='CAPTURE_RECORD'),false);
@@ -94,7 +97,7 @@ test('service-worker restart resumes existing offscreen analysis without recordi
 test('orphaned operation becomes actionable error with no automatic recording',async()=>{
   const h=await harness({storage:{operation:{phase:'running',captureId:'lost',videoId:'abcdefghijk',tabId:7}}});assert.equal(h.storage.operation.phase,'error');assert.equal(h.messages.some(m=>m.type==='GET_STREAM'),false);
 });
-test('full analysis requires consent and help opens bundled local page',async()=>{const h=await harness();assert.equal((await h.send({type:'ANALYZE_URL'})).ok,false);await h.send({type:'OPEN_HELP'});assert.ok(h.messages.some(m=>m.type==='TAB_CREATE'&&m.url==='chrome-extension://test/help.html'));assert.equal(h.network.length,0);});
+test('full analysis requires consent and help opens bundled local page',async()=>{const h=await harness();assert.equal((await h.send({type:'ANALYZE_URL'})).ok,false);await h.send({type:'OPEN_HELP'});assert.ok(h.messages.some(m=>m.type==='TAB_CREATE'&&m.url==='chrome-extension://test/help.html'));assert.deepEqual(uploads(h),[]);});
 
 test('explicit recording permission failure waits and never starts automatic recording',async()=>{
   const config={permissionDenied:true},h=await harness(config);await h.enable();assert.equal(h.storage.operation.phase,'waiting_permission');const before=h.messages.filter(m=>m.type==='GET_STREAM').length;await h.send({type:'AUTO_START'},video);assert.equal(h.messages.filter(m=>m.type==='GET_STREAM').length,before);config.permissionDenied=false;await h.send({type:'START_CAPTURE'});assert.equal(h.storage.operation.phase,'capturing');
@@ -138,10 +141,54 @@ test('audio lookup runs in the owning YouTube tab and rejects foreign, stale and
  const h=await harness();await h.send({type:'ENABLE_LOCAL'});const captureId=h.storage.operation.captureId;
  assert.equal((await h.send({type:'FULL_AUDIO_LOOKUP',captureId},video)).ok,false);
  assert.equal((await h.send({type:'FULL_AUDIO_LOOKUP',captureId:'stale'},recorder)).ignored,true);
- const result=await h.send({type:'FULL_AUDIO_LOOKUP',captureId},recorder);assert.equal(result.ok,true);assert.equal(result.source.transport,'youtube-page-visionos');assert.equal(h.messages.find(m=>m.type==='LOOKUP_FULL_AUDIO').tabId,7);assert.equal(h.network.length,0);
+ const result=await h.send({type:'FULL_AUDIO_LOOKUP',captureId},recorder);assert.equal(result.ok,true);assert.equal(result.source.transport,'youtube-page-visionos');assert.equal(h.messages.find(m=>m.type==='LOOKUP_FULL_AUDIO').tabId,7);assert.deepEqual(uploads(h),[]);
  const bad=await harness({wrongLookup:true});await bad.send({type:'ENABLE_LOCAL'});assert.equal((await bad.send({type:'FULL_AUDIO_LOOKUP',captureId:bad.storage.operation.captureId},recorder)).ok,false);
 });
 test('cancellation aborts a pending page lookup and discards its late source',async()=>{
  const gate=deferred(),h=await harness({lookupGate:gate.promise});await h.send({type:'ENABLE_LOCAL'});const captureId=h.storage.operation.captureId;
  const pending=h.send({type:'FULL_AUDIO_LOOKUP',captureId},recorder);await tick();await h.send({type:'CANCEL'});gate.resolve();assert.equal((await pending).ok,false);assert.ok(h.messages.some(m=>m.type==='CANCEL_AUDIO_LOOKUP'&&m.captureId===captureId));assert.equal(h.storage.operation.phase,'cancelled');
+});
+
+const cloudServer=({available=true,synthetic=false,issue=[]}={})=>async(url,options={})=>{
+  if(url===`${CLOUD.origin}/v1/availability`)return new Response(JSON.stringify({available,synthetic,scope:'speech-only',install_daily_audio_minutes:20}),{status:200});
+  if(url===`${CLOUD.origin}/v1/installs`&&options.method==='POST'){const key='osi_'+String(issue.length).repeat(43).slice(0,43);issue.push(key);return new Response(JSON.stringify({install_key:key,daily_audio_minutes:20}),{status:201});}
+  return new Response('{}',{status:404});
+};
+
+test('cloud speech is offered only for real analysis and only after consent from the panel',async()=>{
+  const h=await harness({storage:{localConsent:{enabled:true}},cloudFetch:cloudServer()});
+  let state=await h.send({type:'GET_STATE'});
+  assert.equal(state.cloud.offered,true);assert.equal(state.cloud.consent,null);assert.equal(state.cloud.dailyMinutes,20);
+  assert.equal((await h.send({type:'SET_CLOUD_CONSENT',choice:'granted'},{url:'https://evil.example/'})).ok,false);
+  assert.equal((await h.send({type:'SET_CLOUD_CONSENT',choice:'maybe'})).ok,false);
+  assert.equal((await h.send({type:'SET_CLOUD_CONSENT',choice:'granted'})).ok,true);
+  assert.equal(h.storage.cloudConsent.choice,'granted');assert.equal(h.storage.cloudConsent.version,CLOUD.consentVersion);
+  state=await h.send({type:'GET_STATE'});assert.equal(state.cloud.consent,'granted');
+  await h.send({type:'ANALYZE_URL'});
+  assert.equal(JSON.stringify(h.messages.find(m=>m.type==='FULL_ANALYZE').cloud),JSON.stringify({enabled:true,allowSynthetic:false}));
+  assert.deepEqual(uploads(h),[]);
+  const declined=await harness({storage:{localConsent:{enabled:true},cloudConsent:{choice:'declined',version:CLOUD.consentVersion}},cloudFetch:cloudServer()});
+  await declined.send({type:'ANALYZE_URL'});assert.equal(declined.messages.find(m=>m.type==='FULL_ANALYZE').cloud.enabled,false);
+});
+
+test('a synthetic or unreachable server is never offered to users',async()=>{
+  for(const config of [{cloudFetch:cloudServer({synthetic:true})},{cloudFetch:cloudServer({available:false})},{}]){
+    const h=await harness({storage:{localConsent:{enabled:true},cloudConsent:{choice:'granted',version:CLOUD.consentVersion}},...config});
+    assert.equal((await h.send({type:'GET_STATE'})).cloud.offered,false);
+    await h.send({type:'ANALYZE_URL'});assert.equal(h.messages.find(m=>m.type==='FULL_ANALYZE').cloud.enabled,false);
+  }
+  const qa=await harness({storage:{localConsent:{enabled:true},cloudConsent:{choice:'granted',version:CLOUD.consentVersion},cloudTest:{allowSynthetic:true}},cloudFetch:cloudServer({synthetic:true})});
+  await qa.send({type:'ANALYZE_URL'});assert.equal(JSON.stringify(qa.messages.find(m=>m.type==='FULL_ANALYZE').cloud),JSON.stringify({enabled:true,allowSynthetic:true}));
+});
+
+test('install keys are issued once, renewed on request and given only to the active analysis document',async()=>{
+  const issue=[],h=await harness({storage:{localConsent:{enabled:true},cloudConsent:{choice:'granted',version:CLOUD.consentVersion}},cloudFetch:cloudServer({issue})});
+  await h.send({type:'ANALYZE_URL'});const captureId=h.storage.operation.captureId;
+  assert.equal((await h.send({type:'CLOUD_KEY',captureId},toolbar)).ok,false);
+  assert.equal((await h.send({type:'CLOUD_KEY',captureId:'stale'},recorder)).ignored,true);
+  const first=await h.send({type:'CLOUD_KEY',captureId},recorder);
+  assert.equal(first.key,issue[0]);assert.equal(h.storage.cloudInstall.key,issue[0]);
+  assert.equal((await h.send({type:'CLOUD_KEY',captureId},recorder)).key,issue[0]);
+  assert.equal((await h.send({type:'CLOUD_KEY',captureId,renew:true},recorder)).key,issue[1]);
+  assert.equal(issue.length,2);
 });

@@ -3,18 +3,19 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
 import * as core from './core.js';
+import * as captionStyle from './caption-style.js';
 const html=await readFile(new URL('./popup.html',import.meta.url),'utf8');
-const source=(await readFile(new URL('./controls.js',import.meta.url),'utf8')).replace(/^import[^\n]+\n/,'const {normalizeSettings,parseDocument,subtitleFile}=core;\n').replace(/^export function /gm,'function ')+'\nmountControls(document,{embedded:embeddedTest});';
+const source=(await readFile(new URL('./controls.js',import.meta.url),'utf8')).replace(/^import \{[^}]+\} from '\.\/core\.js';\n/m,'const {normalizeSettings,parseDocument,subtitleFile}=core;\n').replace(/^import \{([^}]+)\} from '\.\/caption-style\.js';\n/m,'const {$1}=captionStyle;\n').replace(/^export function /gm,'function ')+'\nmountControls(document,{embedded:embeddedTest});';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function harness(config={}){
   const elements=new Map(),messages=[];
-  for(const match of html.matchAll(/<([a-z]+)\b([^>]*\bid="([^"]+)"[^>]*)>/g)){const [,tag,attrs,id]=match;elements.set(id,{id,tag,type:attrs.match(/type="([^"]+)"/)?.[1]||'',value:attrs.match(/value="([^"]+)"/)?.[1]||'',checked:/\bchecked\b/.test(attrs),hidden:/\bhidden\b/.test(attrs),disabled:false,textContent:'',title:'',style:{},dataset:{},listeners:{},addEventListener(type,fn){this.listeners[type]=fn;},click(){return this.listeners.click?.();}});}
-  const state={ok:true,videoId:'abcdefghijk',tabId:7,title:'영상 - YouTube',document:null,hasStoredDocument:false,awaitingAnalysis:false,settings:core.DEFAULT_SETTINGS,analysisOptions:{language:'ko',capture_frames:false,music_detail:true},localEnabled:Boolean(config.enabled),operation:{phase:'idle'}};
+  for(const match of html.matchAll(/<([a-z]+)\b([^>]*\bid="([^"]+)"[^>]*)>/g)){const [,tag,attrs,id]=match;elements.set(id,{id,tag,type:attrs.match(/type="([^"]+)"/)?.[1]||'',value:attrs.match(/value="([^"]+)"/)?.[1]||'',checked:/\bchecked\b/.test(attrs),hidden:/\bhidden\b/.test(attrs),disabled:false,textContent:'',title:'',style:{setProperty(name,value){this[name]=value;}},dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;},focus(){},listeners:{},addEventListener(type,fn){this.listeners[type]=fn;},click(){return this.listeners.click?.();}});}
+  const state={ok:true,videoId:'abcdefghijk',tabId:7,title:'영상 - YouTube',document:null,hasStoredDocument:false,awaitingAnalysis:false,settings:core.DEFAULT_SETTINGS,analysisOptions:{language:'ko',capture_frames:false,music_detail:true},localEnabled:Boolean(config.enabled),cloud:config.cloud||{offered:false,consent:null},operation:{phase:'idle'}};
   let storageListener;const rootListeners={};
   const window={addEventListener(){}};window.parent=config.embedded?{postMessage(){}}:window;
-  const chrome={runtime:{async sendMessage(m){messages.push(structuredClone(m));if(m.type==='GET_STATE')return structuredClone(state);if(m.type==='HEALTH')return {ok:true,health:{message:'기기 내 분석'}};if(m.type==='ENABLE_LOCAL')state.localEnabled=true;return {ok:true};}},storage:{onChanged:{addListener(fn){storageListener=fn;}}}};
-  const document={getElementById(id){assert.ok(elements.has(id),'unknown element '+id);return elements.get(id);},addEventListener(type,fn){rootListeners[type]=fn;},documentElement:{dataset:{}},body:{getBoundingClientRect:()=>({height:700})},activeElement:null};
-  vm.runInNewContext(source,{embeddedTest:Boolean(config.embedded),core,chrome,document,window,location:{search:config.embedded?'?view=panel&parent=https%3A%2F%2Fwww.youtube.com':''},URLSearchParams,URL,Blob,ResizeObserver:class{observe(){}},requestAnimationFrame:()=>1,cancelAnimationFrame(){},setInterval(){},setTimeout(){},Date,Number,Math,console});await tick();await tick();
+  const chrome={runtime:{async sendMessage(m){messages.push(structuredClone(m));if(m.type==='GET_STATE')return structuredClone(state);if(m.type==='HEALTH')return {ok:true,health:{message:'기기 내 분석'}};if(m.type==='ENABLE_LOCAL')state.localEnabled=true;if(m.type==='SET_CLOUD_CONSENT')state.cloud={...state.cloud,consent:m.choice};return {ok:true};}},storage:{onChanged:{addListener(fn){storageListener=fn;}}}};
+  const document={getElementById(id){assert.ok(elements.has(id),'unknown element '+id);return elements.get(id);},addEventListener(type,fn){rootListeners[type]=fn;},documentElement:{dataset:{}},head:{append(){}},fonts:{load:async()=>[]},querySelectorAll:()=>[],createElement:()=>({dataset:{},addEventListener(){}}),body:{getBoundingClientRect:()=>({height:700})},activeElement:null};
+  vm.runInNewContext(source,{embeddedTest:Boolean(config.embedded),core,captionStyle,chrome,document,window,location:{search:config.embedded?'?view=panel&parent=https%3A%2F%2Fwww.youtube.com':''},URLSearchParams,URL,Blob,ResizeObserver:class{observe(){}},requestAnimationFrame:()=>1,cancelAnimationFrame(){},setInterval(){},setTimeout(fn){fn();return 1;},clearTimeout(){},Date,Number,Math,console});await tick();await tick();
   return {elements,messages,state,rootListeners,async click(id){await elements.get(id).click();await tick();},async progress(op){state.operation=op;storageListener({operation:{newValue:op}},'local');await tick();},async change(id){await elements.get(id).listeners.change?.();await tick();}};
 }
 test('popup first use shows disclosure and cannot silently enable or start capture',async()=>{
@@ -70,4 +71,40 @@ test('position controls persist immediately and reset to the default center anch
   const h=await harness({enabled:true});h.elements.get('positionX').value='0';h.elements.get('positionY').value='100';await h.elements.get('positionX').listeners.input();await tick();
   let request=h.messages.findLast(m=>m.type==='SET_SETTINGS');assert.equal(request.settings.positionX,0);assert.equal(request.settings.positionY,100);assert.equal(h.elements.get('positionXValue').textContent,'0%');assert.match(h.elements.get('positionSample').style.left,/clamp/);
   await h.click('resetPosition');request=h.messages.findLast(m=>m.type==='SET_SETTINGS');assert.equal(request.settings.positionX,50);assert.equal(request.settings.positionY,88);
+});
+test('design themes fill every appearance field, persist, and report a custom mix',async()=>{
+  const h=await harness({enabled:true}),el=id=>h.elements.get(id);
+  assert.equal(el('theme-onsori').attributes['aria-pressed'],'true');assert.match(el('themeState').textContent,/온소리 기본/);
+  assert.match(el('fontFamily').innerHTML,/<optgroup label="고딕"><option value="Noto Sans KR">/);assert.match(el('fontFamily').innerHTML,/value="__custom"/);
+  assert.equal(el('theme-contrast').style['--cap-text'],'#ffff00');
+  await h.click('theme-contrast');let request=h.messages.findLast(m=>m.type==='SET_SETTINGS');
+  for(const [key,value] of Object.entries(captionStyle.themeSettings('contrast')))assert.equal(request.settings[key],value,key);
+  assert.equal(request.settings.positionY,88);assert.equal(el('theme-contrast').attributes['aria-pressed'],'true');assert.equal(el('theme-onsori').attributes['aria-pressed'],'false');
+  el('bgOpacity').value='40';await el('bgOpacity').listeners.input();await tick();request=h.messages.findLast(m=>m.type==='SET_SETTINGS');assert.equal(request.settings.bgOpacity,40);assert.equal(el('bgOpacityValue').textContent,'40%');assert.match(el('themeState').textContent,/직접 바꾼/);
+  assert.equal(el('previewCaptions').dataset.shape,'box');assert.equal(el('previewCaptions').style['--cap-bg'],'rgba(0,0,0,0.4)');
+  await h.click('resetDesign');request=h.messages.findLast(m=>m.type==='SET_SETTINGS');assert.equal(request.settings.textColor,'#ffffff');assert.equal(request.settings.fontFamily,'');assert.equal(request.settings.bgShape,'box');
+});
+test('fonts persist from the Korean list or a validated Google Fonts name',async()=>{
+  const h=await harness({enabled:true}),el=id=>h.elements.get(id),saves=()=>h.messages.filter(m=>m.type==='SET_SETTINGS').length;
+  el('fontFamily').value='Jua';await h.change('fontFamily');let request=h.messages.findLast(m=>m.type==='SET_SETTINGS');assert.equal(request.settings.fontFamily,'Jua');assert.match(el('fontStatus').textContent,/Jua/);
+  el('fontFamily').value='__custom';await h.change('fontFamily');assert.equal(el('customFontRow').hidden,false);
+  const before=saves();el('customFont').value='Roboto";}body{x:1';await h.click('applyFont');assert.equal(saves(),before);assert.match(el('feedback').textContent,/영문·숫자·띄어쓰기/);
+  el('textColor').value='#ff8800';await h.change('textColor');request=h.messages.findLast(m=>m.type==='SET_SETTINGS');assert.equal(request.settings.fontFamily,'Jua','unapplied typing keeps the saved font');
+  el('customFont').value='  Roboto   Slab ';await h.click('applyFont');request=h.messages.findLast(m=>m.type==='SET_SETTINGS');assert.equal(request.settings.fontFamily,'Roboto Slab');assert.equal(request.settings.textColor,'#ff8800');
+  const stored=await harness({enabled:true});stored.state.settings={...core.DEFAULT_SETTINGS,fontFamily:'Roboto Slab'};await stored.click('studio');assert.equal(stored.elements.get('fontFamily').value,'__custom');assert.equal(stored.elements.get('customFont').value,'Roboto Slab');assert.equal(stored.elements.get('customFontRow').hidden,false);
+});
+test('cloud speech consent appears once, after local setup, only when the server offers real analysis',async()=>{
+  const hidden=await harness({enabled:true});assert.equal(hidden.elements.get('cloudConsent').hidden,true);assert.equal(hidden.elements.get('cloudOptionRow').hidden,true);
+  const before=await harness({cloud:{offered:true,consent:null,dailyMinutes:20}});assert.equal(before.elements.get('cloudConsent').hidden,true);
+  const h=await harness({enabled:true,cloud:{offered:true,consent:null,dailyMinutes:15}});
+  assert.equal(h.elements.get('cloudConsent').hidden,false);assert.equal(h.elements.get('cloudDailyMinutes').textContent,'15');
+  assert.equal(h.messages.some(m=>m.type==='SET_CLOUD_CONSENT'),false);
+  await h.click('cloudAccept');
+  assert.equal(h.messages.find(m=>m.type==='SET_CLOUD_CONSENT').choice,'granted');
+  assert.equal(h.elements.get('cloudConsent').hidden,true);assert.equal(h.elements.get('cloudSpeech').checked,true);
+  h.elements.get('cloudSpeech').checked=false;await h.elements.get('cloudSpeech').listeners.change({target:h.elements.get('cloudSpeech')});await tick();
+  assert.equal(h.messages.filter(m=>m.type==='SET_CLOUD_CONSENT').at(-1).choice,'declined');
+  const declined=await harness({enabled:true,cloud:{offered:true,consent:null}});await declined.click('cloudDecline');
+  assert.equal(declined.messages.find(m=>m.type==='SET_CLOUD_CONSENT').choice,'declined');assert.equal(declined.elements.get('cloudConsent').hidden,true);
+  assert.match(html,/DeepInfra/);assert.match(html,/24시간 뒤 지웁니다/);
 });

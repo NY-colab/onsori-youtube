@@ -1,7 +1,8 @@
-export const DEFAULT_SETTINGS = Object.freeze({typographyVersion:2,autoAnalyze:true,enabled:true,showSpeech:true,showSound:true,showMusic:true,infoLevel:'standard',effectStrength:1,baseSize:14,offset:0,positionX:50,positionY:88});
+import {STYLE_DEFAULTS,normalizeCaptionStyle} from './caption-style.js';
+export const DEFAULT_SETTINGS = Object.freeze({typographyVersion:2,autoAnalyze:true,enabled:true,showSpeech:true,showSound:true,showMusic:true,infoLevel:'standard',effectStrength:1,baseSize:14,offset:0,positionX:50,positionY:88,...STYLE_DEFAULTS});
 export const KIND_NAMES = Object.freeze({speech:'대사',sound:'효과음',music:'음악'});
 export function normalizeSettings(value={}) {
-  const s={...DEFAULT_SETTINGS};
+  const s={...DEFAULT_SETTINGS,...normalizeCaptionStyle(value)};
   for(const key of ['autoAnalyze','enabled','showSpeech','showSound','showMusic']) if(typeof value[key]==='boolean') s[key]=value[key];
   if(['simple','standard','rich'].includes(value.infoLevel)) s.infoLevel=value.infoLevel;
   if([0,.5,1].includes(Number(value.effectStrength))) s.effectStrength=Number(value.effectStrength);

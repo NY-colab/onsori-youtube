@@ -1,0 +1,32 @@
+# Host nginx sample, after domain/TLS/firewall approval. Replace all CHANGE_ME fields.
+# Do not publish Prometheus port 9090 or gateway port 8000 through the firewall.
+limit_req_zone $binary_remote_addr zone=onsori:10m rate=5r/s;
+limit_conn_zone $binary_remote_addr zone=onsori_conn:10m;
+server {
+    listen 443 ssl;
+    server_name CHANGE_ME_APPROVED_DOMAIN;
+    ssl_certificate /CHANGE_ME/fullchain.pem;
+    ssl_certificate_key /CHANGE_ME/privkey.pem;
+    client_max_body_size 42m;
+    client_body_timeout 30s;
+    send_timeout 30s;
+    location = /metrics { return 404; }
+    location ^~ /metrics/ { return 404; }
+    location = /healthz {
+        proxy_pass http://127.0.0.1:8000;
+    }
+    location ^~ /v1/ {
+        # Operator pilot: additionally restrict approved operator/n8n egress IPs here.
+        allow 127.0.0.1;
+        # Add only approved operator/n8n static egress addresses above deny all.
+        deny all;
+        limit_conn onsori_conn 2;
+        limit_req zone=onsori burst=10 nodelay;
+        proxy_read_timeout 30s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Authorization $http_authorization;
+        proxy_pass http://127.0.0.1:8000;
+    }
+    location / { return 404; }
+}

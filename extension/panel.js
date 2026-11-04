@@ -14,10 +14,10 @@ export function createYouTubePanel(onVisibilityChange=()=>{},mount=mountControls
     host=document.createElement('onsori-panel');
     host.setAttribute('aria-label','온소리 자막 패널');
     const shadow=host.attachShadow({mode:'open'}),style=document.createElement('style');
-    style.textContent=panelCSS+'\n:host{display:block;width:100%;min-width:0;margin:0 0 16px;box-sizing:border-box}:host([hidden]){display:none!important}.expand{width:100%;padding:14px;background:var(--bg);color:var(--mint);border:1px solid var(--line);border-radius:12px}';
+    style.textContent=panelCSS+'\n:host{display:block;width:100%;min-width:0;margin:0 0 16px;box-sizing:border-box}:host([hidden]){display:none!important}.expand{display:flex;align-items:center;justify-content:space-between;width:100%;min-height:44px;padding:12px 16px;background:var(--bg);color:var(--text);font-weight:600;border:1px solid var(--line);border-radius:12px;transition:background-color .15s var(--ease)}.expand:hover{background:var(--panel)}.expand:after{content:"";width:6px;height:6px;margin-right:4px;border-right:1.5px solid var(--faint);border-bottom:1.5px solid var(--faint);transform:translateY(-2px) rotate(45deg)}';
     body=document.createElement('div');body.className='panel-body';body.innerHTML=panelHTML;
     expand=document.createElement('button');expand.type='button';expand.hidden=true;expand.className='expand';
-    expand.textContent='온소리 자막 펼치기 ▾';expand.setAttribute('aria-label','온소리 자막 패널 펼치기');
+    expand.textContent='온소리 자막 펼치기';expand.setAttribute('aria-label','온소리 자막 패널 펼치기');
     expand.addEventListener('click',event=>{if(event.isTrusted)collapse(false);});
     shadow.append(style,body,expand);
     controls=mount(shadow,{embedded:true,onCollapse:()=>collapse(true)});
