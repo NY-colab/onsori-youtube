@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          "extension/popup.html"
+        ],
+        "createdAt": "2026-10-31T14:52:40.735Z",
+        "reason": "Claude: only finding is .style-preview, a 16:9 mock video frame whose children are absolutely positioned (captions bottom:9%, toggle 7px inset); detector cannot see the inset"
+      }
+    ]
+  }
+}

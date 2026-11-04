@@ -55,7 +55,7 @@ test('SRT/VTT flatten overlapping sound and speech and neutralize HTML markup',(
   const srt=subtitleFile(d,'srt');assert.match(srt,/00:00:01,000 --> 00:00:02,000\n‹b›안녕‹\/b›\n\[문 닫힘\]/);assert.doesNotMatch(srt,/<b>/);assert.match(srt,/00:00:02,000 --> 00:00:04,000/);
   assert.ok(subtitleFile(d,'vtt').startsWith('WEBVTT\n\n'));assert.equal(JSON.parse(subtitleFile(d,'json')).cues[0].text,'<b>안녕</b>');
 });
-test('studio and extension share byte-identical core logic',async()=>{assert.equal(await readFile(new URL('./core.js',import.meta.url),'utf8'),await readFile(new URL('../web/core.js',import.meta.url),'utf8'));});
+test('studio and extension share byte-identical core logic',async()=>{for(const name of ['core.js','caption-style.js'])assert.equal(await readFile(new URL('./'+name,import.meta.url),'utf8'),await readFile(new URL('../web/'+name,import.meta.url),'utf8'),name);});
 
 const profile=[{time:1,scale:.75,dbfs:-50},{time:2,scale:1.55,dbfs:-10},{time:3,scale:1,dbfs:-30}];
 test('legacy font preferences migrate to half size once, retaining dynamic ratios',()=>{
