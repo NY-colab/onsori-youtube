@@ -1,0 +1,9 @@
+# Only gateway runtime sources belong in the build context.
+**
+!cloud_gateway/
+!cloud_gateway/app.py
+!cloud_gateway/__init__.py
+!cloud_gateway/requirements.txt
+!deploy/
+!deploy/cloud/
+!deploy/cloud/Dockerfile
