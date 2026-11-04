@@ -50,6 +50,15 @@ def test_pilot_nginx_public_paths():
     v1 = site.split("location ^~ /v1/ {", 1)[1].split("}", 1)[0]
     assert "allow 180.210.76.21;" in v1 and "deny all;" in v1
     assert "limit_except GET { deny all; }" in site.split("location ^~ /v1/ {", 1)[1]
+    # Extension routes are public but rate limited; only the gateway decides access.
+    jobs = site.split("location ^~ /v1/jobs {", 1)[1].split("\n    }", 1)[0]
+    assert "limit_except GET POST DELETE OPTIONS { deny all; }" in jobs and "allow " not in jobs
+    assert "proxy_set_header X-Real-IP $remote_addr;" in jobs and "limit_req zone=onsori " in jobs
+    issue = site.split("location = /v1/installs {", 1)[1].split("\n    }", 1)[0]
+    assert "limit_except POST OPTIONS { deny all; }" in issue and "zone=onsori_issue" in issue
+    assert "proxy_set_header X-Real-IP $remote_addr;" in issue
+    assert "limit_except GET { deny all; }" in site.split("location = /v1/availability {", 1)[1].split("\n    }", 1)[0]
+    assert site.index("location ^~ /v1/jobs {") < site.index("location ^~ /v1/ {")
     prom = site.split("location ^~ /prometheus/ {", 1)[1]
     assert prom.index("include /etc/nginx/onsori-grafana-allow.conf;") < prom.index("deny all;")
     assert "auth_basic_user_file /etc/nginx/onsori-prometheus.htpasswd;" in prom

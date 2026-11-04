@@ -219,8 +219,9 @@ def test_daily_budget_reservation_survives_restart_and_failed_call(settings):
     with TestClient(module.create_app(config, transport=httpx.MockTransport(handler))) as client:
         assert final(client, post(client).json()["id"])["status"] == "error"
     with TestClient(module.create_app(config, transport=httpx.MockTransport(handler))) as client:
-        job = final(client, post(client, key="second-job-0002").json()["id"])
-        assert job["status"] == "error" and job["error"] == "daily_audio_limit"
+        # The reserved second survives restart; a new upload is refused before queueing.
+        refused = post(client, key="second-job-0002")
+        assert refused.status_code == 429 and refused.json()["detail"] == "daily_audio_limit"
     assert len(calls) == 1
 
 
@@ -286,3 +287,87 @@ def test_process_lock_rejects_second_process(settings):
         with pytest.raises(RuntimeError, match="already in use"):
             with TestClient(module.create_app(settings)):
                 pass
+
+
+def install(client, ip="198.51.100.7"):
+    response = client.post("/v1/installs", headers={"X-Real-IP": ip})
+    assert response.status_code == 201, response.text
+    key = response.json()["install_key"]
+    assert module.INSTALL_KEY.fullmatch(key)
+    return {"Authorization": "Bearer " + key}
+
+
+def post_as(client, auth, seconds=1, key="install-job-0001"):
+    return client.post("/v1/jobs", headers={**auth, "Idempotency-Key": key},
+                       files={"file": ("input.wav", wav(seconds), "audio/wav")},
+                       data={"consent": "true", "language": "ko"})
+
+
+def test_public_availability_reports_only_what_the_extension_needs(settings):
+    with TestClient(module.create_app(settings)) as client:
+        assert client.get("/v1/availability").json() == {"available": True, "synthetic": True, "scope": "speech-only",
+                                                         "install_daily_audio_minutes": 20}
+    with TestClient(module.create_app(replace(settings, provider="disabled"))) as client:
+        assert client.get("/v1/availability").json()["available"] is False
+
+
+def test_install_keys_are_hashed_rate_limited_per_address_and_cannot_read_operator_routes(settings):
+    with TestClient(module.create_app(replace(settings, installs_per_ip_day=2))) as client:
+        first = install(client)
+        install(client)
+        refused = client.post("/v1/installs", headers={"X-Real-IP": "198.51.100.7"})
+        assert refused.status_code == 429 and refused.json()["detail"] == "install_issue_limit"
+        install(client, ip="203.0.113.9")
+        for path in ("/v1/status", "/metrics"):
+            assert client.get(path, headers=first).status_code == 401
+        assert client.get("/v1/jobs/x", headers={"Authorization": "Bearer osi_" + "A" * 43}).status_code == 401
+        token = first["Authorization"].split(" ", 1)[1]
+    db = sqlite3.connect(settings.data_dir / "gateway.sqlite3")
+    rows = db.execute("SELECT key_hash, ip_hash FROM installs").fetchall()
+    db.close()
+    assert len(rows) == 3
+    assert all(token not in json.dumps(row) and "198.51.100.7" not in json.dumps(row) for row in rows)
+
+
+def test_install_sees_only_its_own_jobs_and_operator_sees_all(settings):
+    with TestClient(module.create_app(settings)) as client:
+        mine, other = install(client), install(client, ip="203.0.113.9")
+        job = post_as(client, mine).json()["id"]
+        assert final(client, job)["status"] == "done"
+        assert client.get("/v1/jobs/" + job, headers=mine).status_code == 200
+        assert client.get("/v1/jobs/" + job, headers=other).status_code == 404
+        assert client.delete("/v1/jobs/" + job, headers=other).status_code == 404
+        # Same idempotency key from another install is a separate job, never a lookup.
+        assert post_as(client, other).json()["id"] != job
+
+
+def test_per_install_and_server_daily_limits_refuse_before_queueing(settings):
+    config = replace(settings, install_daily_audio_minutes=2 / 60, daily_audio_minutes=60)
+    with TestClient(module.create_app(config)) as client:
+        auth = install(client)
+        assert final(client, post_as(client, auth, key="limit-job-0001").json()["id"])["status"] == "done"
+        assert post_as(client, auth, key="limit-job-0002").status_code == 202
+        refused = post_as(client, auth, key="limit-job-0003")
+        assert refused.status_code == 429 and refused.json()["detail"] == "install_daily_limit"
+        # A fresh install still has its own allowance; the operator is not install-limited.
+        assert post_as(client, install(client, ip="203.0.113.9"), key="limit-job-0004").status_code == 202
+        assert "onsori_limit_rejections_total 1" in client.get("/metrics", headers={"Authorization": "Bearer " + METRICS}).text
+
+
+def test_cors_allows_extension_origins_only(settings):
+    with TestClient(module.create_app(settings)) as client:
+        origin = "chrome-extension://" + "a" * 32
+        preflight = client.options("/v1/jobs", headers={"Origin": origin, "Access-Control-Request-Method": "POST",
+                                                        "Access-Control-Request-Headers": "authorization,idempotency-key"})
+        assert preflight.status_code == 200 and preflight.headers["access-control-allow-origin"] == origin
+        assert "access-control-allow-origin" not in client.get("/v1/availability", headers={"Origin": "https://evil.example"}).headers
+
+
+def test_existing_database_gains_install_column(settings):
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(settings.data_dir / "gateway.sqlite3")
+    db.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY, key_hash TEXT UNIQUE NOT NULL, request_hash TEXT NOT NULL, status TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL, started_at REAL, finished_at REAL, elapsed_seconds REAL, duration REAL NOT NULL, audio_path TEXT, video_id TEXT, title TEXT NOT NULL, language TEXT NOT NULL, result_json TEXT, error TEXT, result_expired INTEGER NOT NULL DEFAULT 0, reserved_seconds REAL NOT NULL DEFAULT 0)")
+    db.commit()
+    db.close()
+    with TestClient(module.create_app(settings)) as client:
+        assert final(client, post(client).json()["id"])["status"] == "done"

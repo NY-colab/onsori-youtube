@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import sqlite3
 import struct
 import time
@@ -27,6 +28,7 @@ import wave
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
+from starlette.middleware.cors import CORSMiddleware
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException
@@ -38,6 +40,19 @@ MODEL = "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B"
 PROVIDER_URL = "https://api.deepinfra.com/v1/inference/" + MODEL
 TERMINAL = ("done", "error", "cancelled")
 BUCKETS = (1, 5, 15, 30, 60, 180, 600, 1800)
+INSTALL_KEY = re.compile(r"osi_[A-Za-z0-9_-]{43}")
+# Any unpacked or store-installed Chrome extension may call the user routes;
+# install keys, not CORS, are the access control.
+EXTENSION_ORIGIN = r"chrome-extension://[a-p]{32}"
+
+
+def utc_day(now: float | None = None) -> str:
+    return datetime.fromtimestamp(time.time() if now is None else now, timezone.utc).strftime("%Y-%m-%d")
+
+
+def utc_day_start(now: float | None = None) -> float:
+    moment = datetime.fromtimestamp(time.time() if now is None else now, timezone.utc)
+    return moment.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
 @dataclass(frozen=True)
@@ -50,6 +65,8 @@ class Settings:
     data_dir: Path = Path("cloud_gateway/data")
     max_queue: int = 4
     daily_audio_minutes: float = 60
+    install_daily_audio_minutes: float = 20
+    installs_per_ip_day: int = 3
     result_ttl_seconds: float = 86400
     sweep_interval_seconds: float = 60
     provider_timeout_seconds: float = 180
@@ -68,6 +85,8 @@ class Settings:
             data_dir=Path(os.getenv("ONSORI_DATA_DIR", "cloud_gateway/data")),
             max_queue=int(os.getenv("ONSORI_MAX_QUEUE", "4")),
             daily_audio_minutes=float(os.getenv("ONSORI_DAILY_AUDIO_MINUTES", "60")),
+            install_daily_audio_minutes=float(os.getenv("ONSORI_INSTALL_DAILY_AUDIO_MINUTES", "20")),
+            installs_per_ip_day=int(os.getenv("ONSORI_INSTALLS_PER_IP_DAY", "3")),
             result_ttl_seconds=float(os.getenv("ONSORI_RESULT_TTL_SECONDS", "86400")),
             sweep_interval_seconds=float(os.getenv("ONSORI_SWEEP_INTERVAL_SECONDS", "60")),
             provider_timeout_seconds=float(os.getenv("ONSORI_PROVIDER_TIMEOUT_SECONDS", "180")),
@@ -85,7 +104,9 @@ class Settings:
             raise ValueError("DEEPINFRA_API_KEY is required for paid inference")
         if not 1 <= self.max_queue <= 32:
             raise ValueError("ONSORI_MAX_QUEUE must be 1..32")
-        for value in (self.daily_audio_minutes, self.result_ttl_seconds,
+        if not 1 <= self.installs_per_ip_day <= 100:
+            raise ValueError("ONSORI_INSTALLS_PER_IP_DAY must be 1..100")
+        for value in (self.daily_audio_minutes, self.install_daily_audio_minutes, self.result_ttl_seconds,
                       self.sweep_interval_seconds, self.provider_timeout_seconds):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Gateway time and budget limits must be finite and positive")
@@ -271,7 +292,14 @@ class Gateway:
                 );
                 CREATE TABLE IF NOT EXISTS usage (day TEXT PRIMARY KEY, audio_seconds REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, value REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS installs (
+                  id TEXT PRIMARY KEY, key_hash TEXT UNIQUE NOT NULL, created_at REAL NOT NULL,
+                  day TEXT NOT NULL, ip_hash TEXT NOT NULL
+                );
             """)
+            # Databases from before install keys gain the owner column in place.
+            if "install_id" not in {r[1] for r in self.db.execute("PRAGMA table_info(jobs)")}:
+                self.db.execute("ALTER TABLE jobs ADD COLUMN install_id TEXT")
             self.db.commit()
             with suppress(OSError):
                 os.chmod(self.directory / "gateway.sqlite3", 0o600)
@@ -302,11 +330,53 @@ class Gateway:
         self.db.close()
         self.lock.close()
 
-    def row(self, job_id: str) -> sqlite3.Row:
+    def row(self, job_id: str, install_id: str | None = None) -> sqlite3.Row:
         row = self.db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        if row is None:
+        # An install sees only its own jobs; another install's job is not found.
+        if row is None or (install_id is not None and row["install_id"] != install_id):
             raise HTTPException(404, "job_not_found")
         return row
+
+    def issue_install(self, client: str) -> dict:
+        day = utc_day()
+        # Keyed hash: the database never stores raw client addresses.
+        ip_hash = hmac.new(self.settings.api_token.encode(), client.encode(), hashlib.sha256).hexdigest()
+        with self.db:
+            issued = self.db.execute("SELECT COUNT(*) FROM installs WHERE ip_hash=? AND day=?", (ip_hash, day)).fetchall()[0][0]
+            if issued >= self.settings.installs_per_ip_day:
+                self.count("limit_rejections")
+                raise HTTPException(429, "install_issue_limit", headers={"Retry-After": "3600"})
+            key = "osi_" + secrets.token_urlsafe(32)
+            self.db.execute("INSERT INTO installs(id,key_hash,created_at,day,ip_hash) VALUES (?,?,?,?,?)",
+                            (uuid.uuid4().hex, hashlib.sha256(key.encode()).hexdigest(), time.time(), day, ip_hash))
+            self.count("installs_issued")
+        return {"install_key": key, "daily_audio_minutes": self.settings.install_daily_audio_minutes}
+
+    def install_id(self, token: str) -> str | None:
+        if not INSTALL_KEY.fullmatch(token):
+            return None
+        row = self.db.execute("SELECT id FROM installs WHERE key_hash=?",
+                              (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+        return row["id"] if row else None
+
+    def check_daily_limits(self, install_id: str | None, duration: float) -> None:
+        # Fail before the upload is queued. reserve() re-checks the server limit
+        # durably right before a paid request.
+        used = self.db.execute("SELECT COALESCE(SUM(audio_seconds),0) FROM usage WHERE day=?", (utc_day(),)).fetchall()[0][0]
+        refused = None
+        if used + duration > self.settings.daily_audio_minutes * 60 + 1e-9:
+            refused = "daily_audio_limit"
+        elif install_id is not None:
+            mine = self.db.execute(
+                "SELECT COALESCE(SUM(duration),0) FROM jobs WHERE install_id=? AND created_at>=? "
+                "AND (reserved_seconds>0 OR status IN ('queued','running','done'))",
+                (install_id, utc_day_start())).fetchall()[0][0]
+            if mine + duration > self.settings.install_daily_audio_minutes * 60 + 1e-9:
+                refused = "install_daily_limit"
+        if refused:
+            with self.db:
+                self.count("limit_rejections")
+            raise HTTPException(429, refused)
 
     def view(self, row: sqlite3.Row) -> dict:
         return {"id": row["id"], "status": row["status"],
@@ -343,13 +413,16 @@ class Gateway:
             with suppress(PermissionError):
                 (self.directory / row["audio_path"]).unlink(missing_ok=True)
 
-    async def submit(self, payload: bytes, fields: dict, key: str) -> tuple[dict, bool]:
+    async def submit(self, payload: bytes, fields: dict, key: str, install_id: str | None = None) -> tuple[dict, bool]:
         duration = wav_duration(payload)
-        key_hash = hashlib.sha256(key.encode()).hexdigest()
+        # Idempotency keys are scoped per install so installs cannot collide or probe each other.
+        key_hash = hashlib.sha256((key if install_id is None else install_id + ":" + key).encode()).hexdigest()
         digest = hashlib.sha256(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode() + b"\x00" + payload).hexdigest()
         async with self.submit_lock:
             self.sweep()
             existing = self.db.execute("SELECT * FROM jobs WHERE key_hash=?", (key_hash,)).fetchone()
+            if existing and existing["install_id"] != install_id:
+                raise HTTPException(409, "idempotency_key_conflict")
             if existing:
                 if not hmac.compare_digest(existing["request_hash"], digest):
                     raise HTTPException(409, "idempotency_key_conflict")
@@ -360,6 +433,7 @@ class Gateway:
                 raise HTTPException(503, "provider_disabled")
             if self.queue.full():
                 raise HTTPException(429, "queue_full", headers={"Retry-After": "10"})
+            self.check_daily_limits(install_id, duration)
             job_id = uuid.uuid4().hex
             path = self.directory / (job_id + ".wav")
             now = time.time()
@@ -370,9 +444,9 @@ class Gateway:
                     stream.flush()
                     os.fsync(stream.fileno())
                 with self.db:
-                    self.db.execute("INSERT INTO jobs(id,key_hash,request_hash,status,created_at,updated_at,duration,audio_path,video_id,title,language) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    self.db.execute("INSERT INTO jobs(id,key_hash,request_hash,status,created_at,updated_at,duration,audio_path,video_id,title,language,install_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                                     (job_id, key_hash, digest, "queued", now, now, duration, path.name,
-                                     fields["video_id"], fields["title"], fields["language"]))
+                                     fields["video_id"], fields["title"], fields["language"], install_id))
                 self.queue.put_nowait(job_id)
             except BaseException:
                 path.unlink(missing_ok=True)
@@ -457,8 +531,8 @@ class Gateway:
                 self.active_call = None
                 self.queue.task_done()
 
-    def cancel(self, job_id: str) -> dict:
-        row = self.row(job_id)
+    def cancel(self, job_id: str, install_id: str | None = None) -> dict:
+        row = self.row(job_id, install_id)
         if row["status"] not in TERMINAL:
             if self.active_id == job_id and self.active_call:
                 self.active_call.cancel()
@@ -497,7 +571,11 @@ class Gateway:
                   f'onsori_job_duration_seconds_count {counters.get("duration_count", 0):g}',
                   "# TYPE onsori_provider_audio_seconds_total counter",
                   f'onsori_provider_audio_seconds_total {counters.get("provider_audio_seconds", 0):g}',
-                  "# TYPE onsori_storage_bytes gauge", f"onsori_storage_bytes {storage}"]
+                  "# TYPE onsori_storage_bytes gauge", f"onsori_storage_bytes {storage}",
+                  "# TYPE onsori_installs_issued_total counter",
+                  f'onsori_installs_issued_total {counters.get("installs_issued", 0):g}',
+                  "# TYPE onsori_limit_rejections_total counter",
+                  f'onsori_limit_rejections_total {counters.get("limit_rejections", 0):g}']
         return "\n".join(lines) + "\n"
 
 
@@ -515,6 +593,8 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
     app = FastAPI(title="OnSori cloud pilot", version="0.1.0", lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(UploadLimitMiddleware)
+    app.add_middleware(CORSMiddleware, allow_origin_regex=EXTENSION_ORIGIN, allow_methods=["GET", "POST", "DELETE"],
+                       allow_headers=["Authorization", "Idempotency-Key"], max_age=600)
 
     def authenticate(request: Request, *, metrics: bool = False) -> Gateway:
         gateway = request.app.state.gateway
@@ -524,6 +604,18 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
         if scheme.lower() != "bearer" or not token.isascii() or not hmac.compare_digest(token, expected):
             raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
         return gateway
+
+    def caller(request: Request) -> tuple[Gateway, str | None]:
+        """Operator token (all jobs) or an issued install key (own jobs only)."""
+        gateway = request.app.state.gateway
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() == "bearer" and token.isascii():
+            if hmac.compare_digest(token, gateway.settings.api_token):
+                return gateway, None
+            install = gateway.install_id(token)
+            if install:
+                return gateway, install
+        raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
 
     @app.get("/healthz")
     async def healthz(request: Request):
@@ -540,6 +632,19 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
                 "counts": counts, "queue_capacity": gateway.settings.max_queue,
                 "daily_audio_minutes": gateway.settings.daily_audio_minutes}
 
+    @app.get("/v1/availability")
+    async def availability(request: Request):
+        # Public: lets the extension decide whether to offer cloud speech analysis.
+        settings = request.app.state.gateway.settings
+        return {"available": settings.enabled, "synthetic": settings.provider == "mock", "scope": "speech-only",
+                "install_daily_audio_minutes": settings.install_daily_audio_minutes}
+
+    @app.post("/v1/installs")
+    async def issue(request: Request):
+        # nginx overwrites X-Real-IP; the gateway port is bound to host loopback only.
+        client = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+        return JSONResponse(request.app.state.gateway.issue_install(client), status_code=201)
+
     @app.get("/metrics")
     async def metrics(request: Request):
         gateway = authenticate(request, metrics=True)
@@ -547,7 +652,7 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
 
     @app.post("/v1/jobs")
     async def submit(request: Request):
-        gateway = authenticate(request)  # Authenticate before multipart parsing.
+        gateway, install = caller(request)  # Authenticate before multipart parsing.
         key = request.headers.get("idempotency-key", "")
         if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", key):
             raise HTTPException(422, "idempotency_key_required_8_to_128_ascii")
@@ -572,7 +677,7 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
                 if len(payload) > MAX_AUDIO_BYTES:
                     raise HTTPException(413, "upload_too_large")
                 fields = {"video_id": video_id, "title": title, "language": language, "consent": True}
-                result, created = await gateway.submit(payload, fields, key)
+                result, created = await gateway.submit(payload, fields, key, install)
                 return JSONResponse(result, status_code=202 if created else 200)
         except StarletteHTTPException as exc:
             if exc.detail == "upload_too_large":
@@ -585,16 +690,17 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
 
     @app.get("/v1/jobs/{job_id}")
     async def get_job(job_id: str, request: Request):
-        gateway = authenticate(request)
+        gateway, install = caller(request)
         gateway.sweep()
-        row = gateway.row(job_id)
+        row = gateway.row(job_id, install)
         if row["result_expired"]:
             raise HTTPException(410, "result_expired_key_preserved")
         return gateway.view(row)
 
     @app.delete("/v1/jobs/{job_id}")
     async def delete_job(job_id: str, request: Request):
-        return authenticate(request).cancel(job_id)
+        gateway, install = caller(request)
+        return gateway.cancel(job_id, install)
 
     return app
 
