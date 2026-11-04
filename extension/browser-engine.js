@@ -1,6 +1,7 @@
 import {validateDocument} from './core.js';
 import {MODEL_CONFIG} from './model-config.js';
 import {assembleDocument,applyReferences,stableOcrReferences,selectOcrFrames} from './browser-engine-signal.js';
+import {transcribeInCloud} from './cloud-speech.js';
 
 const abortError=()=>new DOMException('분석을 취소했습니다.','AbortError');
 function check(signal){if(signal?.aborted)throw abortError();}
@@ -31,7 +32,7 @@ async function decode(blob,signal,maxSeconds=MODEL_CONFIG.maxSeconds){
     check(signal);return mono;
   }finally{await context.close();}
 }
-async function infer(pcm,options,onProgress,signal){
+async function infer(pcm,options,onProgress,signal,extra={}){
   check(signal);
   const worker=new Worker(new URL('./browser-inference-worker.js',import.meta.url),{type:'module'});
   return new Promise((resolve,reject)=>{
@@ -44,7 +45,7 @@ async function infer(pcm,options,onProgress,signal){
       else if(data.type==='error')finish(reject,new Error(data.message));
     };
     // Transfer a copy: preserve waveform for shared-reference RMS after inference.
-    const copy=pcm.slice();worker.postMessage({type:'analyze',pcm:copy.buffer,language:options.language||'ko',events:options.event_detection!==false,device:options.engine_device==='wasm'?'wasm':'auto'},[copy.buffer]);
+    const copy=pcm.slice();worker.postMessage({type:'analyze',pcm:copy.buffer,language:options.language||'ko',events:options.event_detection!==false,device:options.engine_device==='wasm'?'wasm':'auto',...extra},[copy.buffer]);
     if(signal?.aborted)abort();
   });
 }
@@ -107,16 +108,33 @@ export function subtitleWordGroups(line){
   }).filter(l=>l.text.replace(/[^\p{L}\p{N}]/gu,'').length>=4);
 }
 
-export async function analyzeRecording({blob,videoId=null,title='브라우저 녹음',startTime=0,options={},references=[],frames=[],scope='clip',expectedDuration,onProgress,signal}={}){
+// Cloud speech (consented full-video analysis): the server transcribes speech while
+// this device measures music and effects. Any cloud failure falls back to local
+// speech recognition, reusing the sound windows already measured.
+async function withCloudSpeech(pcm,{videoId,title,options,cloud,onProgress,signal}){
+  const remote=transcribeInCloud(pcm,{videoId,title,cloud,signal,onProgress:p=>onProgress?.({...p,progress:.22})}).then(asr=>({asr}),error=>({error}));
+  const local=await infer(pcm,options,onProgress,signal,{asr:false});
+  const speech=await remote;check(signal);
+  if(speech.asr)return {...local,asr:speech.asr,runtime:{...local.runtime,speech:'cloud'}};
+  if(speech.error?.name==='AbortError')throw speech.error;
+  const reason=String(speech.error?.message||'클라우드 대사 분석을 완료하지 못했습니다.').slice(0,200);
+  onProgress?.({progress:.45,message:`${reason} 이 기기에서 대사를 분석합니다.`});
+  const fallback=await infer(pcm,options,onProgress,signal,{windows:local.windows});
+  return {...fallback,runtime:{...fallback.runtime,cloud_fallback:reason}};
+}
+
+export async function analyzeRecording({blob,videoId=null,title='브라우저 녹음',startTime=0,options={},references=[],frames=[],scope='clip',expectedDuration,cloud=null,onProgress,signal}={}){
   check(signal);
   if(typeof startTime!=='number'||!Number.isFinite(startTime)||startTime<0||startTime>86340)throw new Error('녹음 시작 시각이 올바르지 않습니다.');
   onProgress?.({progress:.02,message:'브라우저에서 오디오 읽는 중'});
   const full=scope==='full-video';
   const pcm=await decode(blob,signal,full?MODEL_CONFIG.maxFullSeconds:MODEL_CONFIG.maxSeconds);
   if(full&&(!Number.isFinite(expectedDuration)||Math.abs(pcm.length/16000-expectedDuration)>Math.max(2,expectedDuration*.01)))throw new Error('전체 오디오의 길이가 영상과 맞지 않아 결과를 적용하지 않았습니다.');
-  const result=await infer(pcm,options,onProgress,signal);check(signal);
+  const result=full&&cloud?.enabled===true?await withCloudSpeech(pcm,{videoId,title,options,cloud,onProgress,signal}):await infer(pcm,options,onProgress,signal);check(signal);
   const doc=assembleDocument({pcm,asr:result.asr,windows:result.windows,runtime:result.runtime,videoId,title,startTime,options});
   doc.metadata.analysis_scope=full?'full-video':'clip';
+  if(result.runtime?.speech==='cloud')doc.warnings.push('대사는 온소리 클라우드(외부 AI 업체 DeepInfra)에서 인식했고, 음악·효과음은 이 기기에서 분석했습니다.');
+  else if(result.runtime?.cloud_fallback)doc.warnings.push(`${result.runtime.cloud_fallback} 대사는 이 기기에서 분석했습니다.`);
   if(options.use_caption_references!==false){
     applyReferences(doc,references,'native');
     try{

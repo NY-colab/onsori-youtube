@@ -1,7 +1,8 @@
 import {selectFullSource} from './full-source.js';
 import {normalizeSettings,validateDocument,youtubeId,readyDocument} from './core.js';
+import {CLOUD} from './cloud-config.js';
 const busyPhases=['requesting','preparing','capturing','uploading','queued','running'];
-const captureMessages=['FULL_AUDIO_LOOKUP','CAPTURE_REFERENCES','CAPTURE_LEVEL','CAPTURE_LIMIT','CAPTURE_ANALYZING','ANALYSIS_PROGRESS','ANALYSIS_COMPLETE','CAPTURE_ERROR'];
+const captureMessages=['CLOUD_KEY','FULL_AUDIO_LOOKUP','CAPTURE_REFERENCES','CAPTURE_LEVEL','CAPTURE_LIMIT','CAPTURE_ANALYZING','ANALYSIS_PROGRESS','ANALYSIS_COMPLETE','CAPTURE_ERROR'];
 let creatingOffscreen,mutation=Promise.resolve(),writes=Promise.resolve(),operationEpoch=0;
 const messageError=e=>/Extension has not been invoked|activeTab permission/i.test(e?.message||'')?'현재 YouTube 영상에서 Chrome 도구 모음의 온소리 아이콘을 직접 눌러 녹음을 연결해 주세요.':e?.message||String(e);
 const state=async()=>(await chrome.storage.local.get('operation')).operation||{phase:'idle',message:'분석할 YouTube 영상을 선택해 주세요.'};
@@ -50,6 +51,29 @@ async function saveDocument(input,tabId,{completion=null,epoch=operationEpoch}={
 });}
 async function ensureOffscreen(){const contexts=await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[chrome.runtime.getURL('offscreen.html')]});if(contexts.length)return;if(!creatingOffscreen)creatingOffscreen=chrome.offscreen.createDocument({url:'offscreen.html',reasons:['USER_MEDIA','BLOBS','WORKERS'],justification:'영상 전체 오디오를 기기 안에서 분석하며, 사용자가 선택한 경우에만 탭 오디오를 녹음합니다.'}).finally(()=>creatingOffscreen=null);await creatingOffscreen;}
 const offscreen=payload=>chrome.runtime.sendMessage({target:'offscreen',...payload});
+// Public availability (no key) cached for a minute; an unreachable server is simply unavailable.
+let availabilityRefresh=null;
+async function cloudAvailability(fresh=false){
+  const {cloudAvailability:cached}=await chrome.storage.session.get('cloudAvailability');if(cached&&Date.now()-cached.at<60000)return cached.value;
+  // Panels show the last answer at once; starting an analysis waits for a fresh one.
+  if(!availabilityRefresh)availabilityRefresh=fetchAvailability().finally(()=>availabilityRefresh=null);
+  return cached&&!fresh?cached.value:availabilityRefresh;
+}
+async function fetchAvailability(){
+  let value={available:false,synthetic:false};
+  try{const r=await fetch(`${CLOUD.origin}/v1/availability`,{credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(5000)});if(r.ok){const j=await r.json();value={available:j.available===true,synthetic:j.synthetic===true,dailyMinutes:Number.isFinite(j.install_daily_audio_minutes)?j.install_daily_audio_minutes:null};}}catch{}
+  await chrome.storage.session.set({cloudAvailability:{at:Date.now(),value}});return value;
+}
+// Synthetic (mock) servers are offered only to an isolated QA profile.
+async function cloudState(fresh=false){const [{cloudConsent,cloudTest},availability]=await Promise.all([chrome.storage.local.get(['cloudConsent','cloudTest']),cloudAvailability(fresh)]);const allowSynthetic=cloudTest?.allowSynthetic===true;return {offered:availability.available&&(!availability.synthetic||allowSynthetic),consent:cloudConsent?.version===CLOUD.consentVersion?cloudConsent.choice:null,dailyMinutes:availability.dailyMinutes,allowSynthetic};}
+// One random key per install, issued by the server on first cloud use; never the operator token.
+async function cloudKey(renew){
+  const {cloudInstall}=await chrome.storage.local.get('cloudInstall');if(cloudInstall?.key&&!renew)return cloudInstall.key;
+  const r=await fetch(`${CLOUD.origin}/v1/installs`,{method:'POST',credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(10000)});
+  if(!r.ok)throw new Error(r.status===429?'오늘 이 주소에서 받을 수 있는 클라우드 열쇠 수를 넘었습니다.':'클라우드 사용 열쇠를 받지 못했습니다.');
+  const {install_key:key}=await r.json();if(!/^osi_[A-Za-z0-9_-]{43}$/.test(key||''))throw new Error('클라우드 사용 열쇠 형식이 올바르지 않습니다.');
+  await chrome.storage.local.set({cloudInstall:{key,issuedAt:Date.now()}});return key;
+}
 async function ensureIdle(){if(busyPhases.includes((await state()).phase))throw new Error('진행 중인 분석을 먼저 취소해 주세요.');}
 async function startCapture(inputOptions,sender={},automatic=false){
   const requestEpoch=operationEpoch;await ensureIdle();const tab=await requestTab(sender),id=youtubeId(tab.url),{localConsent}=await chrome.storage.local.get('localConsent');
@@ -103,7 +127,8 @@ async function startFull(inputOptions,sender={},automatic=false){
     if(epoch!==operationEpoch)return {ok:true,cancelled:true};
     const op={...base,title:source.title,expectedDuration:source.duration,phase:'running',message:'전체 오디오를 가져옵니다. 영상은 재생하지 않아도 됩니다.'};
     if(!await setState(op,epoch))return {ok:true,cancelled:true};
-    const result=await offscreen({type:'FULL_ANALYZE',captureId,source,options});
+    const cloud=await cloudState(true).catch(()=>({offered:false}));
+    const result=await offscreen({type:'FULL_ANALYZE',captureId,source,options,cloud:{enabled:cloud.offered&&cloud.consent==='granted',allowSynthetic:cloud.allowSynthetic===true}});
     if(epoch!==operationEpoch){await offscreen({type:'CAPTURE_DISCARD',captureId});return {ok:true,cancelled:true};}
     if(!result?.ok)throw new Error(result?.error||'전체 분석을 시작하지 못했습니다.');return {ok:true};
   }catch(e){if(epoch!==operationEpoch)return {ok:true,cancelled:true};await setState({...base,phase:'error',message:messageError(e)},epoch);throw e;}
@@ -120,9 +145,11 @@ async function autoStart(message,sender){
 }
 const consentSender=sender=>{if(sender.id===chrome.runtime.id&&sender.frameId===0&&sender.tab&&youtubeId(sender.url))return true;try{const u=new URL(sender.url);return u.origin===new URL(chrome.runtime.getURL('popup.html')).origin&&u.protocol==='chrome-extension:'&&u.host===new URL(chrome.runtime.getURL('popup.html')).host&&u.pathname==='/popup.html';}catch{return false;}};
 async function handle(message,sender){const handleEpoch=operationEpoch;switch(message.type){
-  case 'GET_STATE':{const tab=await requestTab(sender).catch(()=>null),data=await chrome.storage.local.get(['settings','captionCache','analysisOptions','localConsent']),id=tab?youtubeId(tab.url):null,operation=await state(),entry=data.captionCache?.[id],document=readyDocument(entry,operation,id);return {ok:true,operation,settings:normalizeSettings(data.settings),analysisOptions:analysisOptions(data.analysisOptions),localEnabled:data.localConsent?.enabled===true,videoId:id,tabId:tab?.id||null,title:tab?.title||'',document,hasStoredDocument:Boolean(entry),awaitingAnalysis:Boolean(entry&&!document)};}
+  case 'GET_STATE':{const tab=await requestTab(sender).catch(()=>null),data=await chrome.storage.local.get(['settings','captionCache','analysisOptions','localConsent']),id=tab?youtubeId(tab.url):null,operation=await state(),entry=data.captionCache?.[id],document=readyDocument(entry,operation,id);return {ok:true,operation,settings:normalizeSettings(data.settings),analysisOptions:analysisOptions(data.analysisOptions),localEnabled:data.localConsent?.enabled===true,cloud:await cloudState().catch(()=>({offered:false,consent:null})),videoId:id,tabId:tab?.id||null,title:tab?.title||'',document,hasStoredDocument:Boolean(entry),awaitingAnalysis:Boolean(entry&&!document)};}
   case 'TOOLBAR_OPEN':{if(!toolbarSender(sender))throw new Error('도구 모음에서 온소리 아이콘을 직접 눌러 주세요.');const tab=await activeTab(),key=`${tab.id}:${youtubeId(tab.url)}`,{autoHistory={}}=await chrome.storage.local.get('autoHistory');await grant(tab);if(autoHistory[key]?.permissionRequired)await rememberAuto(key,{permissionRequired:false,windows:[]});return autoStart(message,sender);}
   case 'ENABLE_LOCAL':{if(!consentSender(sender))throw new Error('온소리 패널에서 사용 설정해 주세요.');const tab=await requestTab(sender);await chrome.storage.local.set({localConsent:{enabled:true,version:2,enabledAt:Date.now()},analysisOptions:analysisOptions(message.options)});if(toolbarSender(sender))await grant(tab);return autoStart(message,sender);}
+  case 'SET_CLOUD_CONSENT':{if(!consentSender(sender))throw new Error('온소리 패널에서 선택해 주세요.');if(!['granted','declined'].includes(message.choice))throw new Error('클라우드 사용 선택이 올바르지 않습니다.');await chrome.storage.local.set({cloudConsent:{choice:message.choice,version:CLOUD.consentVersion,at:Date.now()}});return {ok:true,cloud:await cloudState()};}
+  case 'CLOUD_KEY':return {ok:true,key:await cloudKey(message.renew===true)};
   case 'SET_SETTINGS':{const settings=normalizeSettings(message.settings);await chrome.storage.local.set({settings});const op=await state();if(!settings.autoAnalyze&&op.automatic&&busyPhases.includes(op.phase))await cancel('자동 분석을 꺼서 진행 중인 분석을 취소했습니다.');return {ok:true,settings};}
   case 'SET_ANALYSIS_OPTIONS':{const options=analysisOptions(message.options);await chrome.storage.local.set({analysisOptions:options});return {ok:true,options};}
   case 'HEALTH':return {ok:true,health:{status:'ok',message:'AI 모델은 첫 분석 때 내려받아 Chrome에 보관합니다. 오디오와 선택한 화면은 기기 안에서 처리합니다.'}};

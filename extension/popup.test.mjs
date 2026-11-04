@@ -10,10 +10,10 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function harness(config={}){
   const elements=new Map(),messages=[];
   for(const match of html.matchAll(/<([a-z]+)\b([^>]*\bid="([^"]+)"[^>]*)>/g)){const [,tag,attrs,id]=match;elements.set(id,{id,tag,type:attrs.match(/type="([^"]+)"/)?.[1]||'',value:attrs.match(/value="([^"]+)"/)?.[1]||'',checked:/\bchecked\b/.test(attrs),hidden:/\bhidden\b/.test(attrs),disabled:false,textContent:'',title:'',style:{setProperty(name,value){this[name]=value;}},dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;},focus(){},listeners:{},addEventListener(type,fn){this.listeners[type]=fn;},click(){return this.listeners.click?.();}});}
-  const state={ok:true,videoId:'abcdefghijk',tabId:7,title:'영상 - YouTube',document:null,hasStoredDocument:false,awaitingAnalysis:false,settings:core.DEFAULT_SETTINGS,analysisOptions:{language:'ko',capture_frames:false,music_detail:true},localEnabled:Boolean(config.enabled),operation:{phase:'idle'}};
+  const state={ok:true,videoId:'abcdefghijk',tabId:7,title:'영상 - YouTube',document:null,hasStoredDocument:false,awaitingAnalysis:false,settings:core.DEFAULT_SETTINGS,analysisOptions:{language:'ko',capture_frames:false,music_detail:true},localEnabled:Boolean(config.enabled),cloud:config.cloud||{offered:false,consent:null},operation:{phase:'idle'}};
   let storageListener;const rootListeners={};
   const window={addEventListener(){}};window.parent=config.embedded?{postMessage(){}}:window;
-  const chrome={runtime:{async sendMessage(m){messages.push(structuredClone(m));if(m.type==='GET_STATE')return structuredClone(state);if(m.type==='HEALTH')return {ok:true,health:{message:'기기 내 분석'}};if(m.type==='ENABLE_LOCAL')state.localEnabled=true;return {ok:true};}},storage:{onChanged:{addListener(fn){storageListener=fn;}}}};
+  const chrome={runtime:{async sendMessage(m){messages.push(structuredClone(m));if(m.type==='GET_STATE')return structuredClone(state);if(m.type==='HEALTH')return {ok:true,health:{message:'기기 내 분석'}};if(m.type==='ENABLE_LOCAL')state.localEnabled=true;if(m.type==='SET_CLOUD_CONSENT')state.cloud={...state.cloud,consent:m.choice};return {ok:true};}},storage:{onChanged:{addListener(fn){storageListener=fn;}}}};
   const document={getElementById(id){assert.ok(elements.has(id),'unknown element '+id);return elements.get(id);},addEventListener(type,fn){rootListeners[type]=fn;},documentElement:{dataset:{}},head:{append(){}},fonts:{load:async()=>[]},querySelectorAll:()=>[],createElement:()=>({dataset:{},addEventListener(){}}),body:{getBoundingClientRect:()=>({height:700})},activeElement:null};
   vm.runInNewContext(source,{embeddedTest:Boolean(config.embedded),core,captionStyle,chrome,document,window,location:{search:config.embedded?'?view=panel&parent=https%3A%2F%2Fwww.youtube.com':''},URLSearchParams,URL,Blob,ResizeObserver:class{observe(){}},requestAnimationFrame:()=>1,cancelAnimationFrame(){},setInterval(){},setTimeout(fn){fn();return 1;},clearTimeout(){},Date,Number,Math,console});await tick();await tick();
   return {elements,messages,state,rootListeners,async click(id){await elements.get(id).click();await tick();},async progress(op){state.operation=op;storageListener({operation:{newValue:op}},'local');await tick();},async change(id){await elements.get(id).listeners.change?.();await tick();}};
@@ -92,4 +92,19 @@ test('fonts persist from the Korean list or a validated Google Fonts name',async
   el('textColor').value='#ff8800';await h.change('textColor');request=h.messages.findLast(m=>m.type==='SET_SETTINGS');assert.equal(request.settings.fontFamily,'Jua','unapplied typing keeps the saved font');
   el('customFont').value='  Roboto   Slab ';await h.click('applyFont');request=h.messages.findLast(m=>m.type==='SET_SETTINGS');assert.equal(request.settings.fontFamily,'Roboto Slab');assert.equal(request.settings.textColor,'#ff8800');
   const stored=await harness({enabled:true});stored.state.settings={...core.DEFAULT_SETTINGS,fontFamily:'Roboto Slab'};await stored.click('studio');assert.equal(stored.elements.get('fontFamily').value,'__custom');assert.equal(stored.elements.get('customFont').value,'Roboto Slab');assert.equal(stored.elements.get('customFontRow').hidden,false);
+});
+test('cloud speech consent appears once, after local setup, only when the server offers real analysis',async()=>{
+  const hidden=await harness({enabled:true});assert.equal(hidden.elements.get('cloudConsent').hidden,true);assert.equal(hidden.elements.get('cloudOptionRow').hidden,true);
+  const before=await harness({cloud:{offered:true,consent:null,dailyMinutes:20}});assert.equal(before.elements.get('cloudConsent').hidden,true);
+  const h=await harness({enabled:true,cloud:{offered:true,consent:null,dailyMinutes:15}});
+  assert.equal(h.elements.get('cloudConsent').hidden,false);assert.equal(h.elements.get('cloudDailyMinutes').textContent,'15');
+  assert.equal(h.messages.some(m=>m.type==='SET_CLOUD_CONSENT'),false);
+  await h.click('cloudAccept');
+  assert.equal(h.messages.find(m=>m.type==='SET_CLOUD_CONSENT').choice,'granted');
+  assert.equal(h.elements.get('cloudConsent').hidden,true);assert.equal(h.elements.get('cloudSpeech').checked,true);
+  h.elements.get('cloudSpeech').checked=false;await h.elements.get('cloudSpeech').listeners.change({target:h.elements.get('cloudSpeech')});await tick();
+  assert.equal(h.messages.filter(m=>m.type==='SET_CLOUD_CONSENT').at(-1).choice,'declined');
+  const declined=await harness({enabled:true,cloud:{offered:true,consent:null}});await declined.click('cloudDecline');
+  assert.equal(declined.messages.find(m=>m.type==='SET_CLOUD_CONSENT').choice,'declined');assert.equal(declined.elements.get('cloudConsent').hidden,true);
+  assert.match(html,/DeepInfra/);assert.match(html,/24시간 뒤 지웁니다/);
 });

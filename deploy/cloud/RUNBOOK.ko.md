@@ -38,6 +38,16 @@ HTTP Request v4.2, Set v3.4, If v2.2의 JSON 구조를 사용했다. 2026-10-30 
 
 패널은 종료 상태(done/error/cancelled)별 누적 job counter, active jobs, 1시간 error 증가량, 5분 p95/평균 처리시간, 제공업체 오디오 초 증가율, gateway 저장 bytes와 scrape up을 사용한다. 관측이 없으면 빈 값/NaN일 수 있고 이를 정확도 100% 또는 장애 0건으로 해석하지 않는다. 오디오 초는 제공업체 청구 금액이 아니다. 알림 수신자/임계값은 아직 확정하지 않았으므로 자동 알림 규칙이나 임의 합격선을 넣지 않았다.
 
+## 확장 프로그램 연결(0.3.8)
+
+확장 프로그램은 운영자 토큰 대신 설치별 열쇠로 접속한다. `POST /v1/installs`가 `osi_`로 시작하는 무작위 열쇠를 한 번 돌려주고, 서버는 열쇠의 SHA-256만 `installs` 표에 저장한다. 발급은 접속 주소마다 UTC 하루 `ONSORI_INSTALLS_PER_IP_DAY`(기본 3)개까지이며, 주소는 운영자 토큰을 키로 한 HMAC 값으로만 저장한다. 열쇠로는 자기 작업만 제출·조회·취소하고 `/v1/status`, `/metrics`는 열 수 없다. idempotency key는 설치별로 따로 계산한다.
+
+업로드는 큐에 넣기 전에 하루 한도를 검사한다. 설치별 `ONSORI_INSTALL_DAILY_AUDIO_MINUTES`(기본 20분)와 서버 전체 `ONSORI_DAILY_AUDIO_MINUTES`(기본 60분)를 넘으면 429 `install_daily_limit`/`daily_audio_limit`으로 거절하고, 유료 호출 직전의 `reserve()`도 서버 전체 한도를 다시 확인한다. 거절 수는 `onsori_limit_rejections_total`, 발급 수는 `onsori_installs_issued_total`로 집계한다.
+
+`GET /v1/availability`는 인증 없이 `available`, `synthetic`, 설치별 하루 한도만 알려 준다. 확장 프로그램은 `available=true`이고 `synthetic=false`일 때만 동의 화면을 보여 주므로, `mock` 서버는 일반 사용자에게 제공되지 않는다. CORS는 `chrome-extension://` 출처만 허용하며 확장 프로그램에는 새 host 권한을 추가하지 않았다. nginx는 `/v1/availability`(GET), `/v1/installs`(POST, 분당 6회), `/v1/jobs`(GET·POST·DELETE)를 모든 주소에 열고 `X-Real-IP`를 덮어쓴다. `/v1/status`는 계속 n8n 송신 IP의 GET만 받는다.
+
+DeepInfra 결제와 지출 한도를 콘솔에서 먼저 설정한 뒤에만 `.env`에 `ONSORI_PROVIDER=deepinfra`, `ONSORI_ALLOW_PAID=true`, `DEEPINFRA_API_KEY`를 넣고 gateway를 재생성한다. 그 전까지는 `disabled`를 유지한다. 열쇠를 모두 무효화하려면 gateway를 멈춘 뒤 `installs` 표를 비운다. 확장 프로그램은 401을 받으면 열쇠를 한 번 새로 받는다.
+
 ## 중단·롤백·토큰 회전
 
 신규 제출을 중단하고 실행 중 작업을 확인한 뒤 `ONSORI_PROVIDER=disabled`, `ONSORI_ALLOW_PAID=false`로 설정해 `docker compose up -d --no-deps gateway`로 재생성한다. 이 조치는 이미 제공업체에 전송된 요청의 비용·처리를 취소하지 않는다. 긴급 중단은 `docker compose stop gateway`다. 전체 정지는 `docker compose down`이며 데이터 볼륨을 보존한다. `down -v`, 볼륨 삭제, DB 교체는 데이터 파괴 작업이므로 별도 승인·백업 없이 실행하지 않는다.

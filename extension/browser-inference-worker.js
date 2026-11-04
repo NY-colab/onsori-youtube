@@ -31,6 +31,8 @@ self.onmessage=async ({data})=>{
       // Progress bands: AST runs first when it decides where Whisper listens.
       const [asrBand,astBand]=gated?[[.46,.7],[.22,.44]]:[[.22,.42],[.5,.7]];
       const classify=async ()=>{
+        // Windows already measured on this device (cloud speech fell back) are reused as-is.
+        if(Array.isArray(data.windows))return data.windows;
         const windows=[];if(data.events===false)return windows;
         progress(astBand[0]-.04,'음악·효과음 AST 모델 준비 중');
         events=await pipeline('audio-classification',eventModel.id,{revision:eventModel.revision,dtype:eventModel.dtype,device,progress_callback:reportDownload(astBand[0]-.02,'음향')});
@@ -52,6 +54,8 @@ self.onmessage=async ({data})=>{
         return windows;
       };
       const transcribe=async plan=>{
+        // Cloud speech: this device measures music and effects only.
+        if(data.asr===false)return {text:'',chunks:[],diagnostics:{method:'speech analyzed by the cloud',windows:0,rejected:[]}};
         progress(asrBand[0]-.14,gpu?`GPU로 한국어 Whisper 모델 준비 중 (첫 실행은 약 ${MODEL_CONFIG.gpu.downloadMB}MB를 내려받습니다)`:'브라우저에서 한국어 Whisper 모델 준비 중 (첫 실행은 모델을 내려받습니다)');
         asr=await pipeline('automatic-speech-recognition',whisper.id,{revision:whisper.revision,dtype:whisper.dtype,device,progress_callback:reportDownload(asrBand[0]-.12,'대사')});
         progress(asrBand[0],`${where}에서 한국어 대사와 시각 분석 중`);
@@ -71,6 +75,7 @@ self.onmessage=async ({data})=>{
         return output;
       };
       if(gated){const windows=await classify();return {asr:await transcribe(speechWindows(windows,duration,asrWindow)),windows};}
+      if(data.asr===false)return {asr:await transcribe([]),windows:await classify()};
       const output=await transcribe(gridWindows(duration,asrWindow));
       return {asr:output,windows:await classify()};
     };

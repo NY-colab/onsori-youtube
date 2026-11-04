@@ -102,7 +102,9 @@ async function analyzeFull(message){
       try{const data=await boundedDownload(source.track.url,{signal,maxBytes:2*1024*1024});references=parseCaptionReferences(JSON.parse(await data.text()),source.videoId,source.duration);}catch(e){if(signal.aborted)throw e;}
     }
     if(current!==session||signal.aborted)return;
-    const document=await analyzeRecording({blob,videoId:source.videoId,title:source.title,startTime:0,scope:'full-video',expectedDuration:source.duration,options:{...message.options,capture_frames:false},references,frames:[],onProgress:update=>report({...update,progress:.05+.95*update.progress}),signal});
+    // Install keys live in the service worker; this document only asks for one while analyzing.
+    const cloud=message.cloud?.enabled===true?{enabled:true,allowSynthetic:message.cloud.allowSynthetic===true,key:async renew=>(await send(session,{type:'CLOUD_KEY',renew}))?.key||null}:null;
+    const document=await analyzeRecording({blob,videoId:source.videoId,title:source.title,startTime:0,scope:'full-video',expectedDuration:source.duration,options:{...message.options,capture_frames:false},references,frames:[],cloud,onProgress:update=>report({...update,progress:.05+.95*update.progress}),signal});
     if(current!==session||signal.aborted)return;
     document.metadata.audio_transport=source.transport||'page-direct';
     const result=await send(session,{type:'ANALYSIS_COMPLETE',document});if(!result?.ok)throw new Error(result?.error||'전체 자막을 저장하지 못했습니다.');session.completed=true;
