@@ -89,13 +89,21 @@ export function readyDocument(entry,operation={},videoId){
   if(entry.origin!=='import'&&(entry.document.metadata?.partial===true||entry.document.metadata?.audio_analyzed===false))return null;
   return entry.document;
 }
+// Sound notation (user-specified 가치봄 rule, 2026-11-05): effects ♪…♪, background music ♬…♬.
+// Idempotent, so stored text, older "[…]" / "♪ …" documents and imports all read the same.
+export const SOUND_MARKS=Object.freeze({sound:'♪',music:'♬'});
+export function soundNotation(kind,text){
+  const mark=SOUND_MARKS[kind];if(!mark)return text;
+  const body=String(text??'').trim().replace(/^\[([^\]]*)\]$/,'$1').trim().replace(/^[♪♬]+\s*/,'').replace(/\s*[♪♬]+$/,'').trim();
+  return body?`${mark} ${body} ${mark}`:`${mark}${mark}`;
+}
 export function captionText(cue,level='standard'){
   if(cue.kind==='speech')return cue.text;
-  if(level==='simple')return `[${KIND_NAMES[cue.kind]}]`;
+  if(level==='simple')return soundNotation(cue.kind,KIND_NAMES[cue.kind]);
   // Also covers documents cached before the music wording update.
   const legacy=cue.kind==='music'&&/미확인|분석 실패|분석 불가/.test(cue.text);
-  const text=legacy?`♪ ${cue.relative_db>=8?'크게 들리는 ':cue.relative_db<=-8?'작게 들리는 ':''}배경 음악이 이어짐`:cue.text;
-  const base=text.startsWith('[')?text:`[${text}]`;
+  const text=legacy?`${cue.relative_db>=8?'크게 들리는 ':cue.relative_db<=-8?'작게 들리는 ':''}배경 음악이 이어짐`:cue.text;
+  const base=soundNotation(cue.kind,text);
   return level==='rich'&&cue.details&&!legacy?`${base} · ${cue.details}`:base;
 }
 export function clockTime(seconds,decimal=false){const t=Math.max(0,Number(seconds)||0),h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=Math.floor(t%60);return `${h?`${h}:`:''}${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}${decimal?'.'+String(Math.floor((t%1)*1000)).padStart(3,'0'):''}`;}
@@ -103,7 +111,7 @@ export function subtitleFile(doc,format){const d=validateDocument(doc);if(format
   // Conventional subtitle players generally show only one event at a time.
   // Flatten overlap boundaries so dialogue and sound descriptions remain together.
   const points=[...new Set(d.cues.flatMap(c=>[Math.round(c.start*1000)/1000,Math.round(c.end*1000)/1000]))].sort((a,b)=>a-b),intervals=[];
-  for(let i=0;i<points.length-1;i++){const a=points[i],b=points[i+1],active=d.cues.filter(c=>c.start<b-.0001&&c.end>a+.0001).sort((x,y)=>(x.kind!=='speech')-(y.kind!=='speech')||x.start-y.start||x.id.localeCompare(y.id));if(!active.length||b<=a)continue;const text=active.map(c=>c.text.replace(/</g,'‹').replace(/>/g,'›').replace(/\r/g,'').replace(/\n\n/g,'\n')).join('\n');const last=intervals.at(-1);if(last&&last.text===text&&Math.abs(last.end-a)<.001)last.end=b;else intervals.push({start:a,end:b,text});}
+  for(let i=0;i<points.length-1;i++){const a=points[i],b=points[i+1],active=d.cues.filter(c=>c.start<b-.0001&&c.end>a+.0001).sort((x,y)=>(x.kind!=='speech')-(y.kind!=='speech')||x.start-y.start||x.id.localeCompare(y.id));if(!active.length||b<=a)continue;const text=active.map(c=>(c.kind==='speech'?c.text:soundNotation(c.kind,c.text)).replace(/</g,'‹').replace(/>/g,'›').replace(/\r/g,'').replace(/\n\n/g,'\n')).join('\n');const last=intervals.at(-1);if(last&&last.text===text&&Math.abs(last.end-a)<.001)last.end=b;else intervals.push({start:a,end:b,text});}
   return (format==='vtt'?'WEBVTT\n\n':'')+intervals.map((c,i)=>`${i+1}\n${stamp(c.start)} --> ${stamp(c.end)}\n${c.text}\n`).join('\n')+'\n';
 }
 

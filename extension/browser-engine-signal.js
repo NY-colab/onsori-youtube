@@ -1,4 +1,5 @@
 import {MODEL_CONFIG} from './model-config.js';
+import {soundNotation} from './core.js';
 import {INSTRUMENTS,GENRES,MOODS,VOCALS,FAMILIES,EVENTS} from './browser-engine-vocabulary.js';
 
 const SR=16000, clamp=(x,a,b)=>Math.max(a,Math.min(b,x)), round=(x,n=3)=>Number(x.toFixed(n));
@@ -32,7 +33,7 @@ export function selectMusicTags(scores){
   instruments=instruments.filter(x=>!rejected.has(x.label)).slice(0,2);
   return {instruments,genre:one(GENRES,.28,.08),mood:one(MOODS,.3,.1),vocal:one(VOCALS,.3,.08),rhythm:null,source:'AST/AudioSet (heuristic scores, not calibrated probabilities)'};
 }
-function describeMusic(tags){const parts=[];if(tags.mood)parts.push(`${tags.mood.text} 음악`);if(tags.instruments.length)parts.push(`${tags.instruments.map(x=>x.text).join('·')} 연주`);if(tags.genre)parts.push(`${tags.genre.text}풍`);if(tags.vocal)parts.push(`${tags.vocal.text} 함께 들림`);return '♪ '+(parts.join(' · ')||'배경 음악이 이어짐');}
+function describeMusic(tags){const parts=[];if(tags.mood)parts.push(`${tags.mood.text} 음악`);if(tags.instruments.length)parts.push(`${tags.instruments.map(x=>x.text).join('·')} 연주`);if(tags.genre)parts.push(`${tags.genre.text}풍`);if(tags.vocal)parts.push(`${tags.vocal.text} 함께 들림`);return soundNotation('music',parts.join(' · ')||'배경 음악이 이어짐');}
 export function assembleDocument({pcm,asr,windows=[],runtime=null,videoId=null,title='',startTime=0,options={}}){
   const device=runtime?.device==='webgpu'?'webgpu':'wasm',speechSource=runtime?.speech==='cloud'?'onsori-cloud-speech':`whisper-browser-${device}`;
   const length=pcm.length/SR,reference=referenceLevel(pcm),cues=[],music_analysis={},rejectedSpeech=[],keptSpeech=[],retimedSpeech=[];let counter=0;
@@ -83,7 +84,7 @@ export function assembleDocument({pcm,asr,windows=[],runtime=null,videoId=null,t
   }
   for(const event of merged){
     const tags=event.kind==='music'?selectMusicTags(event.scores):null;
-    const text=tags?(options.music_detail===false?'♪ 배경 음악이 이어짐':describeMusic(tags)):`${EVENTS[event.label][0]} ${EVENTS[event.label][1]}`;
+    const text=tags?(options.music_detail===false?soundNotation('music','배경 음악이 이어짐'):describeMusic(tags)):soundNotation(event.kind,`${EVENTS[event.label][0]} ${EVENTS[event.label][1]}`);
     const bounds=event.kind==='sound'?activeBounds(pcm,event.start,event.end):[event.start,event.end];
     const cue=add(...bounds,text,event.kind,{confidence:clamp(event.score,0,1),details:'AI 음향 분류 추정 · 최대 2초 구간의 혼합 음량으로 시각을 보정하며 실제 발음 시각과 차이가 있습니다.'});
     if(cue&&tags)music_analysis[cue.id]=tags;
@@ -127,7 +128,7 @@ export function applyReferences(doc,references,mode='native'){
           if(parts.length&&(tail.source!==parts[0].source||tail.start-parts.at(-1).end>(screen?1.2:.7)||tail.start<parts.at(-1).end-(screen?.3:.15)))break;
           parts.push(tail);const ref=parts[0];if(Math.abs(ref.start-first.start)>(screen?3.5:.8)||Math.abs(tail.end-last.end)>(screen?1.5:.8))continue;
           const overlap=Math.max(0,Math.min(last.end,tail.end)-Math.max(first.start,ref.start));if(overlap/(last.end-first.start)<(screen?.3:.75)||overlap/(tail.end-ref.start)<(screen?.6:.75))continue;
-          const text=parts.map(r=>r.text.trim()).join(' '),b=normalized(text),score=similarity(a,b);if(!b.length||minRatio(a,b)<(screen?.75:.6)||/[\[\]♪]/.test(text))continue;
+          const text=parts.map(r=>r.text.trim()).join(' '),b=normalized(text),score=similarity(a,b);if(!b.length||minRatio(a,b)<(screen?.75:.6)||/[\[\]♪♬]/.test(text))continue;
           if(screen){
             const jamo=similarity(a.normalize('NFD'),b.normalize('NFD'));
             const edge=(x,y)=>similarity(x,y)>=.66||similarity(x.normalize('NFD'),y.normalize('NFD'))>=.75;

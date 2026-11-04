@@ -77,3 +77,14 @@ test('speech segments without any letter or digit are not shown',()=>{
   const d=assembleDocument({pcm,asr:{text:'- – 네',chunks:[{text:' - ',timestamp:[0,1]},{text:'–',timestamp:[1,2]},{text:'네',timestamp:[2,3]}]},videoId:'abcdefghijk',options:{event_detection:false}});
   assert.deepEqual(d.cues.map(c=>c.text),['네']);
 });
+
+test('generated music and effect cues use ♬…♬ and ♪…♪',()=>{
+  const pcm=new Float32Array(16000*8);for(let i=0;i<pcm.length;i++)pcm[i]=Math.sin(i/7)*.2;
+  const w=(start,end,labels)=>({start,end,labels:Object.entries(labels).map(([label,score])=>({label,score}))});
+  const windows=[w(0,2,{Music:.9,Piano:.7}),w(2,4,{Music:.9,Piano:.7}),w(4,6,{Knock:.92}),w(6,8,{Music:.9})];
+  for(const music_detail of [true,false]){
+    const cues=assembleDocument({pcm,asr:{text:'',chunks:[]},windows,videoId:'abcdefghijk',options:{music_detail}}).cues;
+    assert.ok(cues.some(c=>c.kind==='music'));assert.ok(cues.some(c=>c.kind==='sound'));
+    for(const c of cues)assert.match(c.text,c.kind==='music'?/^♬ \S.*\S ♬$/:/^♪ \S.*\S ♪$/);
+  }
+});

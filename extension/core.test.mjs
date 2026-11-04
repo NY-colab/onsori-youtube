@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {validateDocument,parseDocument,youtubeId,readyDocument,activeCues,captionSize,trimVolumeProfile,updateCaptionSizes,captionText,subtitleFile,normalizeSettings,DEFAULT_SETTINGS} from './core.js';
+import {validateDocument,parseDocument,youtubeId,readyDocument,activeCues,captionSize,trimVolumeProfile,updateCaptionSizes,captionText,soundNotation,subtitleFile,normalizeSettings,DEFAULT_SETTINGS} from './core.js';
 const cue=(patch={})=>({id:'speech-1',start:0,end:4,text:'안녕하세요.',kind:'speech',dbfs:-20,relative_db:0,scale:1,confidence:.9,source:'test',review_required:true,...patch});
 const doc=(cues=[cue()],patch={})=>({schema_version:'1.0',video_id:'abcdefghijk',title:'검증 자막',duration:10,cues,warnings:[],metadata:{},...patch});
 test('normalizes and sorts without accepting invalid times or text',()=>{
@@ -45,14 +45,14 @@ test('volume typography preserves distinctions and honors strength zero',()=>{
 });
 test('three levels expose different amount of sound information',()=>{
   const c=cue({kind:'sound',text:'문이 세게 닫힘',details:'가까운 곳에서 날카롭게 울림'});
-  assert.equal(captionText(c,'simple'),'[효과음]');
-  assert.equal(captionText(c,'standard'),'[문이 세게 닫힘]');
+  assert.equal(captionText(c,'simple'),'♪ 효과음 ♪');assert.equal(captionText(cue({kind:'music',text:'배경 음악이 이어짐'}),'simple'),'♬ 음악 ♬');
+  assert.equal(captionText(c,'standard'),'♪ 문이 세게 닫힘 ♪');
   assert.match(captionText(c,'rich'),/가까운 곳/);
   assert.equal(captionText(cue(),'simple'),'안녕하세요.');
 });
 test('SRT/VTT flatten overlapping sound and speech and neutralize HTML markup',()=>{
   const d=doc([cue({text:'<b>안녕</b>'}),cue({id:'effect',kind:'sound',start:1,end:2,text:'[문 닫힘]'})]);
-  const srt=subtitleFile(d,'srt');assert.match(srt,/00:00:01,000 --> 00:00:02,000\n‹b›안녕‹\/b›\n\[문 닫힘\]/);assert.doesNotMatch(srt,/<b>/);assert.match(srt,/00:00:02,000 --> 00:00:04,000/);
+  const srt=subtitleFile(d,'srt');assert.match(srt,/00:00:01,000 --> 00:00:02,000\n‹b›안녕‹\/b›\n♪ 문 닫힘 ♪/);assert.doesNotMatch(srt,/<b>/);assert.match(srt,/00:00:02,000 --> 00:00:04,000/);
   assert.ok(subtitleFile(d,'vtt').startsWith('WEBVTT\n\n'));assert.equal(JSON.parse(subtitleFile(d,'json')).cues[0].text,'<b>안녕</b>');
 });
 test('studio and extension share byte-identical core logic',async()=>{for(const name of ['core.js','caption-style.js'])assert.equal(await readFile(new URL('./'+name,import.meta.url),'utf8'),await readFile(new URL('../web/'+name,import.meta.url),'utf8'),name);});
@@ -70,8 +70,8 @@ test('legacy font preferences migrate to half size once, retaining dynamic ratio
 });
 test('old cached music uses neutral wording without inventing an instrument or leaking failure text',()=>{
   const old=cue({kind:'music',text:'♪ 음악 · 악기·분위기 미확인',details:'프린터 소리',relative_db:-12});
-  assert.equal(captionText(old,'rich'),'[♪ 작게 들리는 배경 음악이 이어짐]');
-  assert.equal(captionText({...old,text:'♪ 피아노 연주 · 규칙적인 박자가 이어짐'},'standard'),'[♪ 피아노 연주 · 규칙적인 박자가 이어짐]');
+  assert.equal(captionText(old,'rich'),'♬ 작게 들리는 배경 음악이 이어짐 ♬');
+  assert.equal(captionText({...old,text:'♪ 피아노 연주 · 규칙적인 박자가 이어짐'},'standard'),'♬ 피아노 연주 · 규칙적인 박자가 이어짐 ♬');
 });
 test('corrected speech provenance survives validation and JSON export',()=>{
   const record={original_text:'입는 오시예요.',original_source:'faster-whisper',corrected_text:'입는 옷이에요.',reference_source:'youtube-human-caption',reference_video_id:'abcdefghijk',reference_start:0,reference_end:4,similarity:.85,original_words:[{start:0,end:1,text:'입는'}],word_timing_status:'cleared_after_source_correction'};
@@ -168,4 +168,11 @@ test('position preferences are normalized and measured centers stay inside the v
   assert.deepEqual(captionPosition({...DEFAULT_SETTINGS,positionX:100,positionY:100},bounds,size),{left:220,top:160});
   assert.deepEqual(captionPosition(DEFAULT_SETTINGS,{left:0,top:0,width:1920,height:1080},{width:600,height:100}),{left:960,top:950.4});
   assert.deepEqual(captionPosition(DEFAULT_SETTINGS,{left:0,top:0,width:80,height:40},{width:200,height:90}),{left:40,top:20});
+});
+test('가치봄식 소리 표기: effects ♪…♪, background music ♬…♬, idempotent for any stored form',()=>{
+  for(const text of ['문 닫히는 소리','[문 닫히는 소리]','♪ 문 닫히는 소리 ♪','♬문 닫히는 소리♬'])assert.equal(soundNotation('sound',text),'♪ 문 닫히는 소리 ♪');
+  for(const text of ['배경 음악이 이어짐','♪ 배경 음악이 이어짐','[♪ 배경 음악이 이어짐]','♬ 배경 음악이 이어짐 ♬'])assert.equal(soundNotation('music',text),'♬ 배경 음악이 이어짐 ♬');
+  assert.equal(soundNotation('speech','♪ 노래 가사 ♪'),'♪ 노래 가사 ♪');
+  assert.equal(captionText(cue({kind:'music',text:'♬ 피아노 연주 ♬',details:'잔잔함'}),'rich'),'♬ 피아노 연주 ♬ · 잔잔함');
+  assert.match(subtitleFile(doc([cue({id:'m',kind:'music',start:0,end:2,text:'♪ 배경 음악이 이어짐'})]),'srt'),/♬ 배경 음악이 이어짐 ♬/);
 });
