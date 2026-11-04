@@ -33,17 +33,18 @@ export function selectMusicTags(scores){
   return {instruments,genre:one(GENRES,.28,.08),mood:one(MOODS,.3,.1),vocal:one(VOCALS,.3,.08),rhythm:null,source:'AST/AudioSet (heuristic scores, not calibrated probabilities)'};
 }
 function describeMusic(tags){const parts=[];if(tags.mood)parts.push(`${tags.mood.text} 음악`);if(tags.instruments.length)parts.push(`${tags.instruments.map(x=>x.text).join('·')} 연주`);if(tags.genre)parts.push(`${tags.genre.text}풍`);if(tags.vocal)parts.push(`${tags.vocal.text} 함께 들림`);return '♪ '+(parts.join(' · ')||'배경 음악이 이어짐');}
-export function assembleDocument({pcm,asr,windows=[],videoId=null,title='',startTime=0,options={}}){
-  const length=pcm.length/SR,reference=referenceLevel(pcm),cues=[],music_analysis={},rejectedSpeech=[],keptSpeech=[];let counter=0;
+export function assembleDocument({pcm,asr,windows=[],runtime=null,videoId=null,title='',startTime=0,options={}}){
+  const device=runtime?.device==='webgpu'?'webgpu':'wasm';
+  const length=pcm.length/SR,reference=referenceLevel(pcm),cues=[],music_analysis={},rejectedSpeech=[],keptSpeech=[],retimedSpeech=[];let counter=0;
   function add(start,end,text,kind,extra={}){
     start=clamp(start,0,length);end=clamp(end,0,length);if(end-start<.02||!text?.trim())return;
-    const cue={id:`browser-${++counter}`,start:round(start+startTime),end:round(end+startTime),text:text.trim().slice(0,2000),kind,...volumeStyle(pcm,start,end,reference),confidence:null,source:kind==='speech'?'whisper-browser-wasm':'AST-browser-wasm',review_required:true,volume_profile:volumeProfile(pcm,start,end,reference,startTime),...extra};cues.push(cue);return cue;
+    const cue={id:`browser-${++counter}`,start:round(start+startTime),end:round(end+startTime),text:text.trim().slice(0,2000),kind,...volumeStyle(pcm,start,end,reference),confidence:null,source:kind==='speech'?`whisper-browser-${device}`:`AST-browser-${device}`,review_required:true,volume_profile:volumeProfile(pcm,start,end,reference,startTime),...extra};cues.push(cue);return cue;
   }
   if(asr?.text?.trim()&&!Array.isArray(asr.chunks))throw new Error('Whisper가 대사 시각을 반환하지 않았습니다. 분석 결과를 표시하지 않습니다.');
   for(const chunk of asr?.chunks||[]){
     const [a,b]=chunk.timestamp||[];if(!Number.isFinite(a))continue;
     // A leading "-" is Whisper's speaker-turn mark, not a spoken word.
-    const end=clamp(Number.isFinite(b)?b:length,0,length),text=String(chunk.text||'').replace(/<\|[^|]*\|>/g,'').trim().replace(/^-+\s*/,'');if(a>=end)continue;
+    const end=clamp(Number.isFinite(b)?b:length,0,length),text=String(chunk.text||'').replace(/<\|[^|]*\|>/g,'').trim().replace(/^-+\s*/,'');if(a>=end||!normalized(text))continue;
     // Whisper can hallucinate words over pure instruments or body sounds.
     // Suppress only where every overlapping AST window has very weak Speech
     // evidence and strong measured non-speech evidence; preserve mixed speech.
@@ -54,7 +55,15 @@ export function assembleDocument({pcm,asr,windows=[],videoId=null,title='',start
     const unheard=normalized(text).length<=8&&speechScore<.2;
     if(evidence.length&&(evidence.every(w=>w.speech<.05&&w.other>=.65)||unheard||(annotation&&evidence.every(w=>w.speech<.05)))){rejectedSpeech.push({start:round(a+startTime),end:round(end+startTime),text,reason:annotation&&speechScore<.05?'annotation without AST speech evidence':unheard?'short text without AST speech evidence':'strong non-speech AST evidence',evidence});continue;}
     if(evidence.length)keptSpeech.push([round(a+startTime,2),round(end+startTime,2),round(speechScore,3)]);
-    if(dbfs(pcm.subarray(Math.floor(a*SR),Math.floor(end*SR)))>-60)add(a,end,text,'speech');
+    // A segment can start at its window start over music. When it is far
+    // longer than its text could take (2 letters/s + 2 s), keep the last run
+    // of AST speech inside Whisper's own bounds; never extend them.
+    let from=a,to=end;const limit=normalized(text).length/2+2;
+    if(to-from>limit){
+      const runs=[];for(const w of evidence.filter(w=>w.speech>=.2).sort((x,y)=>x.start-y.start)){const last=runs.at(-1);if(last&&w.start<=last.end+.01)last.end=w.end;else runs.push({start:w.start,end:w.end});}
+      const run=runs.at(-1);if(run){to=Math.min(to,run.end);from=Math.max(from,run.start,to-limit);retimedSpeech.push([round(a+startTime,2),round(end+startTime,2),round(from+startTime,2),round(to+startTime,2)]);}
+    }
+    if(to-from>=.02&&dbfs(pcm.subarray(Math.floor(from*SR),Math.floor(to*SR)))>-60)add(from,to,text,'speech');
   }
   const events=[];
   for(const window of windows){
@@ -79,7 +88,7 @@ export function assembleDocument({pcm,asr,windows=[],videoId=null,title='',start
     const cue=add(...bounds,text,event.kind,{confidence:clamp(event.score,0,1),details:'AI 음향 분류 추정 · 최대 2초 구간의 혼합 음량으로 시각을 보정하며 실제 발음 시각과 차이가 있습니다.'});
     if(cue&&tags)music_analysis[cue.id]=tags;
   }
-  const doc={schema_version:'1.0',video_id:videoId,title:title.slice(0,300),duration:round(startTime+length),cues:cues.sort((a,b)=>a.start-b.start||a.end-b.end),warnings:['브라우저 AI 추정 결과입니다. 대사·음향 분류와 시각은 검토가 필요합니다.',...(options.event_detection===false?['음악·효과음 분석을 끈 결과입니다.']:[])],metadata:{engine:'browser-wasm',audio_analyzed:true,partial:false,analysis_range:[startTime,round(startTime+length)],reference_dbfs:reference,music_analysis,models:MODEL_CONFIG,asr_diagnostics:asr?.diagnostics||null,speech_filter:{method:'all overlapping AST windows Speech/Conversation/Narration <0.05 and music/sound >=0.65, or text of at most 8 letters/digits with Speech <0.2 in every overlapping window; skipped when event detection disabled',rejected:rejectedSpeech,kept_speech_evidence:keptSpeech},volume_profile_method:'100ms RMS; fixed recording median reference; fast attack .85 / slow release .35; display scale is whole-cue RMS',event_timing:'AST non-overlapping windows up to 2 seconds; transient bounds refined by mixed RMS, approximate onset/offset',rhythm_analysis:'not performed; no BPM inferred',speech_language:options.language||'ko'}};return removeAsrMetaTags(doc);
+  const doc={schema_version:'1.0',video_id:videoId,title:title.slice(0,300),duration:round(startTime+length),cues:cues.sort((a,b)=>a.start-b.start||a.end-b.end),warnings:['브라우저 AI 추정 결과입니다. 대사·음향 분류와 시각은 검토가 필요합니다.',...(options.event_detection===false?['음악·효과음 분석을 끈 결과입니다.']:[])],metadata:{engine:`browser-${device}`,audio_analyzed:true,partial:false,analysis_range:[startTime,round(startTime+length)],reference_dbfs:reference,music_analysis,models:runtime?{...MODEL_CONFIG,device,whisper:runtime.whisper,events:runtime.events,gpu_fallback:runtime.gpu_fallback??null}:MODEL_CONFIG,asr_diagnostics:asr?.diagnostics||null,speech_timing:{method:'segments longer than letters/2+2 s are bounded to the last AST Speech>=0.2 run inside them',retimed:retimedSpeech},speech_filter:{method:'all overlapping AST windows Speech/Conversation/Narration <0.05 and music/sound >=0.65, or text of at most 8 letters/digits with Speech <0.2 in every overlapping window; skipped when event detection disabled',rejected:rejectedSpeech,kept_speech_evidence:keptSpeech},volume_profile_method:'100ms RMS; fixed recording median reference; fast attack .85 / slow release .35; display scale is whole-cue RMS',event_timing:'AST non-overlapping windows up to 2 seconds; transient bounds refined by mixed RMS, approximate onset/offset',rhythm_analysis:'not performed; no BPM inferred',speech_language:options.language||'ko'}};return removeAsrMetaTags(doc);
 }
 function activeBounds(pcm,start,end){const points=[];for(let t=start;t<end;t+=.05)points.push({t,level:dbfs(pcm.subarray(Math.floor(t*SR),Math.floor(Math.min(end,t+.05)*SR)))});const threshold=Math.max(-55,Math.max(...points.map(p=>p.level))-24),active=points.filter(p=>p.level>threshold);return active.length?[Math.max(start,active[0].t-.1),Math.min(end,active.at(-1).t+.15)]:[start,end];}
 

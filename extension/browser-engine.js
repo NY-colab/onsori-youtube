@@ -44,7 +44,7 @@ async function infer(pcm,options,onProgress,signal){
       else if(data.type==='error')finish(reject,new Error(data.message));
     };
     // Transfer a copy: preserve waveform for shared-reference RMS after inference.
-    const copy=pcm.slice();worker.postMessage({type:'analyze',pcm:copy.buffer,language:options.language||'ko',events:options.event_detection!==false},[copy.buffer]);
+    const copy=pcm.slice();worker.postMessage({type:'analyze',pcm:copy.buffer,language:options.language||'ko',events:options.event_detection!==false,device:options.engine_device==='wasm'?'wasm':'auto'},[copy.buffer]);
     if(signal?.aborted)abort();
   });
 }
@@ -115,7 +115,7 @@ export async function analyzeRecording({blob,videoId=null,title='브라우저 �
   const pcm=await decode(blob,signal,full?MODEL_CONFIG.maxFullSeconds:MODEL_CONFIG.maxSeconds);
   if(full&&(!Number.isFinite(expectedDuration)||Math.abs(pcm.length/16000-expectedDuration)>Math.max(2,expectedDuration*.01)))throw new Error('전체 오디오의 길이가 영상과 맞지 않아 결과를 적용하지 않았습니다.');
   const result=await infer(pcm,options,onProgress,signal);check(signal);
-  const doc=assembleDocument({pcm,asr:result.asr,windows:result.windows,videoId,title,startTime,options});
+  const doc=assembleDocument({pcm,asr:result.asr,windows:result.windows,runtime:result.runtime,videoId,title,startTime,options});
   doc.metadata.analysis_scope=full?'full-video':'clip';
   if(options.use_caption_references!==false){
     applyReferences(doc,references,'native');
