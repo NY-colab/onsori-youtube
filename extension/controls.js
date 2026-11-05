@@ -1,4 +1,5 @@
 import {normalizeSettings,parseDocument,subtitleFile} from './core.js';
+import {contextLost,DISCONNECTED_ERROR} from './connection.js';
 import {CAPTION_FONTS,FONT_GROUPS,CAPTION_THEMES,CAPTION_CSS,STYLE_DEFAULTS,FONT_NAME,matchTheme,themeSettings,applyCaptionStyle,captionStyleVars,ensureCaptionFont,fontInfo,effectiveWeight} from './caption-style.js';
 // YouTube sees shadow-DOM key events as coming from our host element, not an input, so a
 // focused control's own keys would also seek, play or change volume. Keep only those keys
@@ -23,7 +24,7 @@ if(embedded){
   keepControlKeys(root);
   $('collapsePanel').addEventListener('click',onCollapse);
 }
-async function send(payload){const r=await chrome.runtime.sendMessage(payload);if(!r?.ok)throw new Error(r?.error||'확장 프로그램에 연결되지 않았습니다.');return r;}
+async function send(payload){let r;try{r=await chrome.runtime.sendMessage(payload);}catch(e){if(contextLost(e))throw new Error(DISCONNECTED_ERROR);throw e;}if(!r?.ok)throw new Error(r?.error||'확장 프로그램에 연결되지 않았습니다.');return r;}
 function feedback(text,error=true){$('feedback').textContent=text;$('feedback').dataset.tone=error?'error':'ok';}
 function renderOperation(op){
   operation=op;

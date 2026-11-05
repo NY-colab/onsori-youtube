@@ -340,6 +340,41 @@ ${c.text}
     return { left: bounds.left + clamp(width * settings.positionX / 100, halfW, width - halfW), top: bounds.top + clamp(height * settings.positionY / 100, halfH, height - halfH) };
   }
 
+  // extension/connection.js
+  var LOST = /Extension context invalidated/i;
+  function extensionConnected(getRuntime = () => globalThis.chrome?.runtime) {
+    try {
+      return Boolean(getRuntime()?.id);
+    } catch {
+      return false;
+    }
+  }
+  function contextLost(error, getRuntime) {
+    return !extensionConnected(getRuntime) || LOST.test(error?.message || String(error || ""));
+  }
+  function createSafeSend(getRuntime, onLost = () => {
+  }) {
+    return (payload) => {
+      if (!extensionConnected(getRuntime)) {
+        onLost();
+        return Promise.resolve(null);
+      }
+      try {
+        return Promise.resolve(getRuntime().sendMessage(payload)).catch((error) => {
+          if (contextLost(error, getRuntime)) onLost();
+          return null;
+        });
+      } catch (error) {
+        if (contextLost(error, getRuntime)) onLost();
+        return Promise.resolve(null);
+      }
+    };
+  }
+  function disconnectMessage(wasBusy) {
+    return (wasBusy ? "\uD655\uC7A5 \uD504\uB85C\uADF8\uB7A8\uC774 \uC5C5\uB370\uC774\uD2B8\uB418\uAC70\uB098 \uB2E4\uC2DC \uBD88\uB7EC\uC640\uC838 \uC9C4\uD589 \uC911\uC774\uB358 \uBD84\uC11D\uC774 \uBA48\uCDC4\uC2B5\uB2C8\uB2E4. " : "\uD655\uC7A5 \uD504\uB85C\uADF8\uB7A8\uC774 \uC5C5\uB370\uC774\uD2B8\uB418\uAC70\uB098 \uB2E4\uC2DC \uBD88\uB7EC\uC640\uC838 \uC774 \uD0ED\uACFC\uC758 \uC5F0\uACB0\uC774 \uB04A\uC5B4\uC84C\uC2B5\uB2C8\uB2E4. ") + "\uC774 \uD0ED\uC744 \uC0C8\uB85C\uACE0\uCE68\uD558\uBA74 \uB2E4\uC2DC \uC5F0\uACB0\uB429\uB2C8\uB2E4." + (wasBusy ? " \uC0C8\uB85C\uACE0\uCE68\uD55C \uB4A4 \uBD84\uC11D\uC744 \uB2E4\uC2DC \uC2DC\uC791\uD574 \uC8FC\uC138\uC694." : "");
+  }
+  var DISCONNECTED_ERROR = "\uD655\uC7A5 \uD504\uB85C\uADF8\uB7A8\uC774 \uB2E4\uC2DC \uBD88\uB7EC\uC640\uC838 \uC5F0\uACB0\uC774 \uB04A\uC5B4\uC84C\uC2B5\uB2C8\uB2E4. \uC774 \uD0ED\uC744 \uC0C8\uB85C\uACE0\uCE68\uD574 \uC8FC\uC138\uC694.";
+
   // extension/controls.js
   var RANGE_KEYS = /* @__PURE__ */ new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
   var ACTIVATE_KEYS = /* @__PURE__ */ new Set([" ", "Enter"]);
@@ -370,7 +405,13 @@ ${c.text}
       $("collapsePanel").addEventListener("click", onCollapse);
     }
     async function send(payload) {
-      const r = await chrome.runtime.sendMessage(payload);
+      let r;
+      try {
+        r = await chrome.runtime.sendMessage(payload);
+      } catch (e) {
+        if (contextLost(e)) throw new Error(DISCONNECTED_ERROR);
+        throw e;
+      }
       if (!r?.ok) throw new Error(r?.error || "\uD655\uC7A5 \uD504\uB85C\uADF8\uB7A8\uC5D0 \uC5F0\uACB0\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.");
       return r;
     }
@@ -715,6 +756,24 @@ ${c.text}
       },
       isExpanded() {
         return Boolean(host?.isConnected && !host.hidden && !collapsed);
+      },
+      // The extension was reloaded: its controls can no longer reach Chrome, so replace them with a way back.
+      disconnect(message, reload) {
+        if (!host) return;
+        try {
+          controls.destroy();
+        } catch {
+        }
+        collapsed = false;
+        expand.hidden = true;
+        body.hidden = false;
+        const slot = body.querySelector("main") || body;
+        slot.innerHTML = '<p class="feedback" role="alert"></p><button type="button" class="primary">\uC774 \uD0ED \uC0C8\uB85C\uACE0\uCE68</button>';
+        slot.querySelector(".feedback").textContent = message;
+        slot.querySelector("button").addEventListener("click", (event) => {
+          if (event.isTrusted) reload();
+        });
+        onVisibilityChange();
       }
     };
   }
@@ -799,9 +858,30 @@ ${c.text}
     const ccStyle = document.createElement("style");
     ccStyle.textContent = 'html[data-onsori-active="true"] .ytp-caption-window-container{visibility:hidden!important}';
     document.documentElement.append(ccStyle);
-    const safeSend = (payload) => chrome.runtime.sendMessage(payload).catch(() => null);
+    const runtime = () => chrome.runtime, connected = () => extensionConnected(runtime);
+    let orphaned = false, inspectInterval = 0, pageObserver = null;
+    function disconnect() {
+      if (orphaned) return;
+      const wasBusy = ["requesting", "preparing", "capturing", "uploading", "queued", "running"].includes(operation.phase) && operation.videoId === videoId;
+      orphaned = true;
+      clearInterval(inspectInterval);
+      pageObserver?.disconnect();
+      captureActive = false;
+      captureFrames = false;
+      const message = disconnectMessage(wasBusy);
+      operation = { phase: "disconnected", videoId, message };
+      dismissedKey = "";
+      panel.disconnect(message, () => location.reload());
+      render();
+      renderStatus();
+    }
+    const safeSend = createSafeSend(runtime, disconnect);
     const isAd = () => Boolean(video?.closest(".ad-showing,.ad-interrupting"));
     async function load(id) {
+      if (!connected()) {
+        disconnect();
+        return;
+      }
       const token = ++loadToken;
       cacheEntry = null;
       doc = null;
@@ -838,12 +918,12 @@ ${c.text}
     }
     function createStatus() {
       const style = document.createElement("style");
-      style.textContent = `.status{position:absolute;top:12px;left:12px;max-width:calc(100% - 24px);width:328px;box-sizing:border-box;background:rgba(20,20,21,.94);border:1px solid rgba(237,237,237,.14);border-radius:12px;padding:12px 16px;box-shadow:0 8px 24px rgba(0,0,0,.35);pointer-events:auto;color:#ededed;font:12px/1.6 "Malgun Gothic","Apple SD Gothic Neo",sans-serif;text-align:left}.status[hidden],.status [hidden]{display:none!important}.status-head{display:flex;justify-content:space-between;align-items:center;gap:8px}.status strong{font-size:13px;font-weight:600;color:#ededed}.status p{margin:8px 0;line-height:1.6;font-size:12px;color:#a1a1a6;word-break:keep-all;overflow-wrap:anywhere}.status .signal{color:#86dcb8}.status .signal[data-silent=true]{color:#f0c36d}.status meter,.status progress{display:block;width:100%;height:4px;margin:8px 0 0;-webkit-appearance:none;appearance:none;border:0;border-radius:2px;background:#2e2e31;overflow:hidden}.status progress::-webkit-progress-bar,.status meter::-webkit-meter-bar{background:#2e2e31;border:0;height:4px}.status progress::-webkit-progress-value,.status meter::-webkit-meter-optimum-value,.status meter::-webkit-meter-suboptimum-value{background:#a2efcd}.status .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.status button{font:600 12px "Malgun Gothic","Apple SD Gothic Neo",sans-serif;cursor:pointer;border:1px solid rgba(237,237,237,.14);border-radius:8px;background:#2e2e31;color:#ededed;padding:8px 12px;transition:background-color .15s cubic-bezier(.22,1,.36,1)}.status button:hover{background:#3a3a3e}.status button:focus-visible{outline:2px solid #a2efcd;outline-offset:2px}.status .close{display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;background:transparent;color:#a1a1a6}.status .close:hover{background:#2e2e31;color:#ededed}.status[data-phase=error]{border-color:rgba(255,158,163,.45)}.status[data-phase=error] strong{color:#ff9ea3}@media(max-width:480px){.status{top:8px;left:8px;max-width:calc(100% - 16px);padding:8px 12px}}`;
+      style.textContent = `.status{position:absolute;top:12px;left:12px;max-width:calc(100% - 24px);width:328px;box-sizing:border-box;background:rgba(20,20,21,.94);border:1px solid rgba(237,237,237,.14);border-radius:12px;padding:12px 16px;box-shadow:0 8px 24px rgba(0,0,0,.35);pointer-events:auto;color:#ededed;font:12px/1.6 "Malgun Gothic","Apple SD Gothic Neo",sans-serif;text-align:left}.status[hidden],.status [hidden]{display:none!important}.status-head{display:flex;justify-content:space-between;align-items:center;gap:8px}.status strong{font-size:13px;font-weight:600;color:#ededed}.status p{margin:8px 0;line-height:1.6;font-size:12px;color:#a1a1a6;word-break:keep-all;overflow-wrap:anywhere}.status .signal{color:#86dcb8}.status .signal[data-silent=true]{color:#f0c36d}.status meter,.status progress{display:block;width:100%;height:4px;margin:8px 0 0;-webkit-appearance:none;appearance:none;border:0;border-radius:2px;background:#2e2e31;overflow:hidden}.status progress::-webkit-progress-bar,.status meter::-webkit-meter-bar{background:#2e2e31;border:0;height:4px}.status progress::-webkit-progress-value,.status meter::-webkit-meter-optimum-value,.status meter::-webkit-meter-suboptimum-value{background:#a2efcd}.status .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.status button{font:600 12px "Malgun Gothic","Apple SD Gothic Neo",sans-serif;cursor:pointer;border:1px solid rgba(237,237,237,.14);border-radius:8px;background:#2e2e31;color:#ededed;padding:8px 12px;transition:background-color .15s cubic-bezier(.22,1,.36,1)}.status button:hover{background:#3a3a3e}.status button:focus-visible{outline:2px solid #a2efcd;outline-offset:2px}.status .close{display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;background:transparent;color:#a1a1a6}.status .close:hover{background:#2e2e31;color:#ededed}.status[data-phase=error],.status[data-phase=disconnected]{border-color:rgba(255,158,163,.45)}.status[data-phase=error] strong,.status[data-phase=disconnected] strong{color:#ff9ea3}@media(max-width:480px){.status{top:8px;left:8px;max-width:calc(100% - 16px);padding:8px 12px}}`;
       root.append(style);
       hud = document.createElement("section");
       hud.className = "status";
       hud.setAttribute("aria-label", "\uC628\uC18C\uB9AC \uC791\uC5C5 \uC0C1\uD0DC");
-      hud.innerHTML = '<div class="status-head"><strong></strong><button class="close" aria-label="\uC9C4\uD589 \uC548\uB0B4 \uC811\uAE30"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M17 7 7 17M7 7l10 10"/></svg></button></div><p class="message" role="status"></p><p class="signal"></p><meter min="0" max="1" value="0" aria-label="\uD0ED \uC624\uB514\uC624 \uC2E0\uD638"></meter><progress max="1" value="0" aria-label="\uBD84\uC11D \uC9C4\uD589\uB960"></progress><div class="actions"><button data-action="STOP_CAPTURE">\uC5EC\uAE30\uAE4C\uC9C0 \uB179\uC74C \xB7 \uBD84\uC11D</button><button data-action="CANCEL">\uCDE8\uC18C</button><button data-action="REPLAY_CAPTURE">\uC790\uB9C9\uC73C\uB85C \uB2E4\uC2DC \uBCF4\uAE30</button><button data-action="SHOW_STATUS">\uC9C4\uD589 \uC0C1\uD0DC \uD3BC\uCE58\uAE30</button></div>';
+      hud.innerHTML = '<div class="status-head"><strong></strong><button class="close" aria-label="\uC9C4\uD589 \uC548\uB0B4 \uC811\uAE30"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M17 7 7 17M7 7l10 10"/></svg></button></div><p class="message" role="status"></p><p class="signal"></p><meter min="0" max="1" value="0" aria-label="\uD0ED \uC624\uB514\uC624 \uC2E0\uD638"></meter><progress max="1" value="0" aria-label="\uBD84\uC11D \uC9C4\uD589\uB960"></progress><div class="actions"><button data-action="STOP_CAPTURE">\uC5EC\uAE30\uAE4C\uC9C0 \uB179\uC74C \xB7 \uBD84\uC11D</button><button data-action="CANCEL">\uCDE8\uC18C</button><button data-action="REPLAY_CAPTURE">\uC790\uB9C9\uC73C\uB85C \uB2E4\uC2DC \uBCF4\uAE30</button><button data-action="SHOW_STATUS">\uC9C4\uD589 \uC0C1\uD0DC \uD3BC\uCE58\uAE30</button><button data-action="RELOAD_PAGE">\uC774 \uD0ED \uC0C8\uB85C\uACE0\uCE68</button></div>';
       root.append(hud);
       hud.querySelector(".close").addEventListener("click", () => {
         dismissedKey = hudKey;
@@ -853,6 +933,10 @@ ${c.text}
         if (button.dataset.action === "SHOW_STATUS") {
           dismissedKey = "";
           renderStatus();
+          return;
+        }
+        if (button.dataset.action === "RELOAD_PAGE") {
+          location.reload();
           return;
         }
         button.disabled = true;
@@ -867,11 +951,11 @@ ${c.text}
       if (!hud) return;
       const op = operation, recording = op.phase === "capturing", busy = ["requesting", "preparing", "capturing", "uploading", "queued", "running"].includes(op.phase);
       hudKey = [op.captureId || op.jobId || op.updatedAt, op.phase].join(":");
-      hud.hidden = panel.isExpanded() || !videoId || op.videoId !== videoId || op.phase === "idle" || isAd();
+      hud.hidden = op.phase === "disconnected" ? !videoId || isAd() : panel.isExpanded() || !videoId || op.videoId !== videoId || op.phase === "idle" || isAd();
       hud.dataset.phase = op.phase;
       const collapsed = dismissedKey === hudKey;
       const seconds = Math.max(0, Math.min(60, Math.floor((Date.now() - (op.startedAt || Date.now())) / 1e3)));
-      hud.querySelector("strong").textContent = recording ? `\uC628\uC18C\uB9AC \xB7 \uB179\uC74C ${seconds} / 60\uCD08` : { waiting_permission: "\uC628\uC18C\uB9AC \xB7 \uB179\uC74C \uC5F0\uACB0", preparing: op.mode === "full" ? "\uC628\uC18C\uB9AC \xB7 \uC601\uC0C1 \uC804\uCCB4 \uBD84\uC11D \uC900\uBE44" : "\uC628\uC18C\uB9AC \xB7 \uB179\uC74C \uC900\uBE44", requesting: "\uC628\uC18C\uB9AC \xB7 \uBD84\uC11D \uC694\uCCAD", uploading: "\uC628\uC18C\uB9AC \xB7 \uAE30\uAE30 \uB0B4 \uBD84\uC11D \uC900\uBE44", queued: "\uC628\uC18C\uB9AC \xB7 \uBD84\uC11D \uB300\uAE30", running: "\uC628\uC18C\uB9AC \xB7 \uC18C\uB9AC \uBD84\uC11D \uC911", done: "\uC628\uC18C\uB9AC \xB7 \uC790\uB9C9 \uC900\uBE44 \uC644\uB8CC", error: "\uC628\uC18C\uB9AC \xB7 \uD655\uC778\uC774 \uD544\uC694\uD569\uB2C8\uB2E4", cancelled: "\uC628\uC18C\uB9AC \xB7 \uCDE8\uC18C\uB428" }[op.phase] || "\uC628\uC18C\uB9AC";
+      hud.querySelector("strong").textContent = recording ? `\uC628\uC18C\uB9AC \xB7 \uB179\uC74C ${seconds} / 60\uCD08` : { waiting_permission: "\uC628\uC18C\uB9AC \xB7 \uB179\uC74C \uC5F0\uACB0", preparing: op.mode === "full" ? "\uC628\uC18C\uB9AC \xB7 \uC601\uC0C1 \uC804\uCCB4 \uBD84\uC11D \uC900\uBE44" : "\uC628\uC18C\uB9AC \xB7 \uB179\uC74C \uC900\uBE44", requesting: "\uC628\uC18C\uB9AC \xB7 \uBD84\uC11D \uC694\uCCAD", uploading: "\uC628\uC18C\uB9AC \xB7 \uAE30\uAE30 \uB0B4 \uBD84\uC11D \uC900\uBE44", queued: "\uC628\uC18C\uB9AC \xB7 \uBD84\uC11D \uB300\uAE30", running: "\uC628\uC18C\uB9AC \xB7 \uC18C\uB9AC \uBD84\uC11D \uC911", done: "\uC628\uC18C\uB9AC \xB7 \uC790\uB9C9 \uC900\uBE44 \uC644\uB8CC", error: "\uC628\uC18C\uB9AC \xB7 \uD655\uC778\uC774 \uD544\uC694\uD569\uB2C8\uB2E4", cancelled: "\uC628\uC18C\uB9AC \xB7 \uCDE8\uC18C\uB428", disconnected: "\uC628\uC18C\uB9AC \xB7 \uC5F0\uACB0\uC774 \uB04A\uC5B4\uC84C\uC2B5\uB2C8\uB2E4" }[op.phase] || "\uC628\uC18C\uB9AC";
       const message = hud.querySelector(".message");
       message.textContent = op.phase === "done" && op.capture ? "\uB179\uC74C\uD55C \uAD6C\uAC04\uC5D0 \uC790\uB9C9\uC744 \uC801\uC6A9\uD588\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uBCF4\uAE30\uB85C \uD655\uC778\uD558\uC138\uC694." : op.message || "";
       message.hidden = collapsed;
@@ -889,6 +973,7 @@ ${c.text}
       hud.querySelector("[data-action=CANCEL]").hidden = !busy || collapsed;
       hud.querySelector("[data-action=REPLAY_CAPTURE]").hidden = op.phase !== "done" || !(op.capture || op.mode === "full") || collapsed;
       hud.querySelector("[data-action=SHOW_STATUS]").hidden = !collapsed;
+      hud.querySelector("[data-action=RELOAD_PAGE]").hidden = op.phase !== "disconnected" || collapsed;
     }
     function syncFont() {
       ensureCaptionFont(document, settings).catch(() => null);
@@ -933,7 +1018,7 @@ ${c.text}
     }
     function render() {
       doc = readyDocument(cacheEntry, operation, videoId);
-      const active = Boolean(doc && doc.video_id === videoId && settings.enabled && video && !isAd());
+      const active = Boolean(doc && doc.video_id === videoId && settings.enabled && video && !isAd() && (!orphaned || youtubeId(location.href) === videoId));
       if (!captionBox) {
         document.documentElement.removeAttribute("data-onsori-active");
         return;
@@ -984,6 +1069,7 @@ ${c.text}
       else raf = 0;
     }
     function automation() {
+      if (orphaned) return;
       if (captureActive) {
         const snap = snapshot();
         references.observe(snap, nativeCaptionText(video?.closest("#movie_player,.html5-video-player")));
@@ -1036,6 +1122,11 @@ ${c.text}
       update();
     }
     function inspect() {
+      if (orphaned) return;
+      if (!connected()) {
+        disconnect();
+        return;
+      }
       const nextId = youtubeId(location.href);
       if (nextId !== videoId) {
         safeSend({ type: "VIDEO_NAVIGATED", videoId: nextId });
@@ -1127,13 +1218,14 @@ ${c.text}
       inspect();
     });
     let inspectTimer;
-    new MutationObserver(() => {
+    pageObserver = new MutationObserver(() => {
       if (!inspectTimer) inspectTimer = setTimeout(() => {
         inspectTimer = null;
         inspect();
       }, 180);
-    }).observe(document.documentElement, { childList: true, subtree: true });
-    setInterval(inspect, 1e3);
+    });
+    pageObserver.observe(document.documentElement, { childList: true, subtree: true });
+    inspectInterval = setInterval(inspect, 1e3);
     let scrollFrame = 0;
     addEventListener("scroll", () => {
       if (!scrollFrame && !raf) scrollFrame = requestAnimationFrame(() => {
