@@ -4,8 +4,9 @@ import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
 import * as core from './core.js';
 import * as captionStyle from './caption-style.js';
+import * as connection from './connection.js';
 const html=await readFile(new URL('./popup.html',import.meta.url),'utf8');
-const source=(await readFile(new URL('./controls.js',import.meta.url),'utf8')).replace(/^import \{[^}]+\} from '\.\/core\.js';\n/m,'const {normalizeSettings,parseDocument,subtitleFile}=core;\n').replace(/^import \{([^}]+)\} from '\.\/caption-style\.js';\n/m,'const {$1}=captionStyle;\n').replace(/^export function /gm,'function ')+'\nmountControls(document,{embedded:embeddedTest});';
+const source=(await readFile(new URL('./controls.js',import.meta.url),'utf8')).replace(/^import \{[^}]+\} from '\.\/core\.js';\n/m,'const {normalizeSettings,parseDocument,subtitleFile}=core;\n').replace(/^import \{([^}]+)\} from '\.\/caption-style\.js';\n/m,'const {$1}=captionStyle;\n').replace(/^import \{([^}]+)\} from '\.\/connection\.js';\n/m,'const {$1}=connection;\n').replace(/^export function /gm,'function ')+'\nmountControls(document,{embedded:embeddedTest});';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function harness(config={}){
   const elements=new Map(),messages=[];
@@ -15,7 +16,7 @@ async function harness(config={}){
   const window={addEventListener(){}};window.parent=config.embedded?{postMessage(){}}:window;
   const chrome={runtime:{async sendMessage(m){messages.push(structuredClone(m));if(m.type==='GET_STATE')return structuredClone(state);if(m.type==='HEALTH')return {ok:true,health:{message:'기기 내 분석'}};if(m.type==='ENABLE_LOCAL')state.localEnabled=true;if(m.type==='SET_CLOUD_CONSENT')state.cloud={...state.cloud,consent:m.choice};return {ok:true};}},storage:{onChanged:{addListener(fn){storageListener=fn;}}}};
   const document={getElementById(id){assert.ok(elements.has(id),'unknown element '+id);return elements.get(id);},addEventListener(type,fn){rootListeners[type]=fn;},documentElement:{dataset:{}},head:{append(){}},fonts:{load:async()=>[]},querySelectorAll:()=>[],createElement:()=>({dataset:{},addEventListener(){}}),body:{getBoundingClientRect:()=>({height:700})},activeElement:null};
-  vm.runInNewContext(source,{embeddedTest:Boolean(config.embedded),core,captionStyle,chrome,document,window,location:{search:config.embedded?'?view=panel&parent=https%3A%2F%2Fwww.youtube.com':''},URLSearchParams,URL,Blob,ResizeObserver:class{observe(){}},requestAnimationFrame:()=>1,cancelAnimationFrame(){},setInterval(){},setTimeout(fn){fn();return 1;},clearTimeout(){},Date,Number,Math,console});await tick();await tick();
+  vm.runInNewContext(source,{embeddedTest:Boolean(config.embedded),core,captionStyle,connection,chrome,document,window,location:{search:config.embedded?'?view=panel&parent=https%3A%2F%2Fwww.youtube.com':''},URLSearchParams,URL,Blob,ResizeObserver:class{observe(){}},requestAnimationFrame:()=>1,cancelAnimationFrame(){},setInterval(){},setTimeout(fn){fn();return 1;},clearTimeout(){},Date,Number,Math,console});await tick();await tick();
   return {elements,messages,state,rootListeners,async click(id){await elements.get(id).click();await tick();},async progress(op){state.operation=op;storageListener({operation:{newValue:op}},'local');await tick();},async change(id){await elements.get(id).listeners.change?.();await tick();}};
 }
 test('popup first use shows disclosure and cannot silently enable or start capture',async()=>{

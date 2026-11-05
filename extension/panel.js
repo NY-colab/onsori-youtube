@@ -37,6 +37,17 @@ export function createYouTubePanel(onVisibilityChange=()=>{},mount=mountControls
       const nextKey=id+'\n'+document.title;
       if(nextKey!==contextKey){contextKey=nextKey;controls.refresh();}
     },
-    isExpanded(){return Boolean(host?.isConnected&&!host.hidden&&!collapsed);}
+    isExpanded(){return Boolean(host?.isConnected&&!host.hidden&&!collapsed);},
+    // The extension was reloaded: its controls can no longer reach Chrome, so replace them with a way back.
+    disconnect(message,reload){
+      if(!host)return;
+      try{controls.destroy();}catch{}
+      collapsed=false;expand.hidden=true;body.hidden=false;
+      const slot=body.querySelector('main')||body;
+      slot.innerHTML='<p class="feedback" role="alert"></p><button type="button" class="primary">이 탭 새로고침</button>';
+      slot.querySelector('.feedback').textContent=message;
+      slot.querySelector('button').addEventListener('click',event=>{if(event.isTrusted)reload();});
+      onVisibilityChange();
+    }
   };
 }
