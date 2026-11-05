@@ -1,18 +1,18 @@
 # 온소리 자막 in YouTube
 
-YouTube의 대사·음악·효과음을 함께 읽고, 구간의 평균 음량을 자막 크기로 표현하는 Chrome 확장 프로그램입니다. **0.3.4는 브라우저 안에서 분석합니다. Python, 별도 프로그램, 운영 서버, API 키가 필요하지 않습니다.**
+YouTube의 대사·음악·효과음을 함께 읽고, 구간의 평균 음량을 자막 크기로 표현하는 Chrome 확장 프로그램입니다. **0.3.10은 기본으로 브라우저 안에서 분석합니다. Python, 별도 프로그램, 운영 서버, API 키가 필요하지 않습니다.**
 
-**Chrome 웹 스토어는 아직 미제출입니다.** 아래 ZIP은 개발자 모드에서 설치하거나 스토어 심사에 제출할 수 있는 패키지입니다. 스토어 승인·공개 후에는 이 페이지에 공식 설치 링크를 추가합니다.
+**최신 버전은 [v0.3.10 릴리스](https://github.com/NY-colab/onsori-youtube/releases/tag/v0.3.10)의 ZIP으로 설치합니다.** [Chrome 웹 스토어](https://chromewebstore.google.com/detail/faoookmndmicfapakdnelnepfdcphgkp)의 공개 버전은 0.3.3이며, 이후 버전은 심사 대기 중입니다.
 
 ## 기존 사용자 업데이트
 
 클라우드·n8n·Grafana 연동은 [추가 업데이트 계획](docs/cloud-update-plan.md)과 [운영 절차](deploy/cloud/RUNBOOK.ko.md)에 정리했습니다. 2026-11-04 운영자 파일럿 서버 연결 결과는 [파일럿 서버 검증](docs/cloud-pilot-verification-2026-11-04.md)에 있습니다. 현재 브라우저 확장의 기본 분석 방식은 기기 내 분석 그대로입니다.
 
-[0.3.4 업데이트 안내](docs/update.md): **새 ZIP 받기 → 기존 확장 폴더에 내용물 덮어쓰기 → 온소리 카드 ⟳ → YouTube F5**. ⟳ 버튼만으로 GitHub의 새 파일을 내려받지는 않습니다. 기존 확장을 삭제할 필요는 없습니다.
+[0.3.10 업데이트 안내](docs/update.md): **새 ZIP 받기 → 기존 확장 폴더에 내용물 덮어쓰기 → 온소리 카드 ⟳ → YouTube F5**. ⟳ 버튼만으로 GitHub의 새 파일을 내려받지는 않습니다. 기존 확장을 삭제할 필요는 없습니다.
 
 ## 설치와 시작
 
-1. [브라우저 전용 확장 ZIP](https://github.com/NY-colab/onsori-youtube/releases/download/v0.3.4/OnSori-Chrome-WebStore-0.3.4.zip)을 받아 압축을 풉니다.
+1. [브라우저 전용 확장 ZIP](https://github.com/NY-colab/onsori-youtube/releases/download/v0.3.10/OnSori-Chrome-WebStore-0.3.10.zip)을 받아 압축을 풉니다.
 2. Chrome에서 `chrome://extensions` → **개발자 모드** → **압축해제된 확장 프로그램을 로드합니다** → 압축을 푼 폴더를 선택합니다.
 3. YouTube 영상에서 퍼즐 아이콘 → **온소리 자막 in YouTube** → **기기 내 분석 사용 설정**을 누릅니다. 처음에는 공개 AI 모델 수백 MB를 내려받습니다.
 4. 기본은 **영상 전체 분석**입니다. 재생하지 않아도 전체 오디오를 분석한 뒤 완성된 자막을 한 번에 표시합니다. **자막으로 다시 보기**로 처음부터 확인합니다.
