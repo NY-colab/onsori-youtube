@@ -101,6 +101,8 @@ export async function correctDocumentSpeech(doc,{apiKey,model=AI_CORRECTION.mode
       record.input_tokens+=usage?.input_tokens||0;record.output_tokens+=usage?.output_tokens||0;
       for(const item of corrections){
         const cue=byId.get(item?.id);if(!cue||cue.ai_correction)continue;
+        // A line returned as it was is no change, not a rejected rewrite.
+        if(String(item.text??'').replace(/\s+/g,' ').trim()===String(cue.text??'').trim())continue;
         const text=acceptCorrection(cue.text,item.text);if(!text){record.rejected++;continue;}
         cue.ai_correction={original_text:cue.text,model:used};cue.text=text;cue.source=`${cue.source}+${correctionSourceTag(used)}`;record.corrected++;
       }

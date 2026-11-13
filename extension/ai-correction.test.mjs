@@ -27,10 +27,11 @@ test('keys are checked by shape and only a hint is ever shown',()=>{
 test('Claude Haiku corrects only recognized speech and keeps the original text',async()=>{
   const d=doc([cue('a','기준 금니를 올렸습니다'),cue('b','네 맞습니다'),cue('c','참조 자막',{source:'whisper-browser-wasm+youtube-native-caption',speech_correction:{}}),cue('d','클라우드 대사',{source:'onsori-cloud-speech'}),cue('m','♬ 음악 ♬',{kind:'music',source:'AST-browser-wasm'}),cue('i','가져온 자막',{source:'import'})]);
   assert.deepEqual(correctionTargets(d).map(c=>c.id),['a','b','d']);
-  const client=fakeClient(answer([{id:'a',text:'기준 금리를 올렸습니다'},{id:'b',text:'전혀 다른 문장으로 바꿔 버렸습니다'},{id:'zz',text:'없는 줄'},{id:'m',text:'음악'}]));
+  const client=fakeClient(answer([{id:'a',text:'기준 금리를 올렸습니다'},{id:'b',text:'전혀 다른 문장으로 바꿔 버렸습니다'},{id:'d',text:' 클라우드  대사 '},{id:'zz',text:'없는 줄'},{id:'m',text:'음악'}]));
   await correctDocumentSpeech(d,{client,context:['앞 대사']});
   assert.equal(d.cues[0].text,'기준 금리를 올렸습니다');assert.deepEqual(d.cues[0].ai_correction,{original_text:'기준 금니를 올렸습니다',model:AI_CORRECTION.model});assert.match(d.cues[0].source,/\+claude-haiku$/);
   assert.equal(d.cues[1].text,'네 맞습니다');assert.equal(d.cues[1].ai_correction,undefined);assert.equal(d.cues[4].text,'♬ 음악 ♬');
+  assert.equal(d.cues[3].text,'클라우드 대사');assert.equal(d.cues[3].ai_correction,undefined);// an unchanged echo is neither corrected nor rejected
   assert.deepEqual({...d.metadata.ai_correction},{model:'claude-haiku-5-5',status:'done',checked:3,corrected:1,rejected:1,input_tokens:100,output_tokens:20});
   const {body,options}=client.calls[0];
   assert.equal(body.model,'claude-haiku-5-5');assert.equal(body.output_config.effort,'low');assert.equal(body.output_config.format.type,'json_schema');assert.equal(body.output_config.format.schema.additionalProperties,false);
