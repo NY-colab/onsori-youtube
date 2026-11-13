@@ -48,6 +48,18 @@ HTTP Request v4.2, Set v3.4, If v2.2의 JSON 구조를 사용했다. 2026-10-30 
 
 DeepInfra 결제와 지출 한도를 콘솔에서 먼저 설정한 뒤에만 `.env`에 `ONSORI_PROVIDER=deepinfra`, `ONSORI_ALLOW_PAID=true`, `DEEPINFRA_API_KEY`를 넣고 gateway를 재생성한다. 그 전까지는 `disabled`를 유지한다. 열쇠를 모두 무효화하려면 gateway를 멈춘 뒤 `installs` 표를 비운다. 확장 프로그램은 401을 받으면 열쇠를 한 번 새로 받는다.
 
+## 자막 오타 보정(0.4.0)
+
+확장 프로그램이 Claude Code 연결이 없는 PC에서 보내는 대사 글자를 운영자의 DeepInfra API 키로 DeepInfra 모델(기본 `deepseek-ai/DeepSeek-V4-Flash-0731`)에 보정 요청한다. 소리는 받지 않는다. 대사 글자는 DB·로그에 남기지 않고 설치별·날짜별 줄 수와 요청·토큰 수만 기록한다. DeepInfra는 요청 내용을 메모리에서만 처리하고 디스크에 저장하거나 학습에 쓰지 않는다(docs.deepinfra.com/account/data-privacy, 2026-11-13 확인). 같은 구조로 Anthropic(`claude-haiku-5-5`)도 고를 수 있다.
+
+1. DeepInfra 대시보드에서 API 키를 만들고 결제(선불 충전 또는 카드)와 지출 한도를 먼저 설정한다. 키는 채팅·문서·화면 공유에 붙이지 않는다. 클라우드 대사 분석과 같은 `DEEPINFRA_API_KEY`를 쓴다.
+2. 새 `cloud_gateway/`, `deploy/cloud/`를 서버에 복사하고 `docker compose build gateway`로 이미지를 다시 만든다(DeepInfra 보정은 기존 `httpx`만 쓰며 새 패키지가 없다). nginx에는 `nginx/onsori-pilot.conf`의 `/v1/corrections` 경로를 반영하고 `nginx -t` 후 reload한다.
+3. `deploy/cloud`에서 `bash enable_correction.sh`를 실행해 키를 화면에 보이지 않게 입력한다(`.env`에 키가 있으면 Enter로 그대로 쓴다). 스크립트가 `.env`(0600)에 `ONSORI_CORRECTION=deepinfra`와 키를 넣고, preflight 검사 후 gateway를 재생성하고 `/v1/availability`의 `corrections: true`, `correction_provider`, `correction_model`을 보여 준다. 오디오 유료 분석 스위치 `ONSORI_ALLOW_PAID`는 바꾸지 않는다. Anthropic으로 바꾸려면 `bash enable_correction.sh anthropic`.
+4. `bash check_correction.sh`로 합성 문장 2줄을 운영자 토큰으로 한 번 보정해 본다(유료 요청 1회, 약 1천 토큰). `corrections`에 고친 줄이 오면 정상이다. 오류 코드는 `correction_provider_auth`(키), `correction_provider_billing`(잔액·결제), `correction_model_unavailable`(모델 이름), `correction_bad_request`(모델이 요청 형식을 받지 않음), `correction_rate_limited`(DeepInfra 한도)다.
+5. 모델과 추론 설정은 `.env`의 `ONSORI_CORRECTION_MODEL`(DeepInfra 모델 ID, 비우면 기본값), `ONSORI_CORRECTION_REASONING`(기본 `none` = 추론 끔, `default` = 보내지 않음)로 바꾸고 `docker compose up -d --no-deps --force-recreate gateway`로 반영한다. 모델이 `reasoning_effort: none`을 거절하면(`correction_bad_request`) `default`로 바꿔 본다.
+6. 하루 한도는 `ONSORI_INSTALL_DAILY_CORRECTION_LINES`(기본 3,000줄), `ONSORI_DAILY_CORRECTION_LINES`(기본 20,000줄)로 조정한다. 한도는 게이트웨이 수준 제약이며 DeepInfra 지출 한도를 대신하지 않는다.
+7. 끄려면 `bash enable_correction.sh --disable`. `ONSORI_CORRECTION=disabled`로 바꾸고, 클라우드 대사 분석(`ONSORI_PROVIDER=deepinfra`)이 쓰지 않으면 DeepInfra 키도 지운 뒤 gateway를 재생성한다. 키가 노출되면 DeepInfra 대시보드에서 즉시 폐기하고 새 키로 3번을 다시 실행한다.
+
 ## 중단·롤백·토큰 회전
 
 신규 제출을 중단하고 실행 중 작업을 확인한 뒤 `ONSORI_PROVIDER=disabled`, `ONSORI_ALLOW_PAID=false`로 설정해 `docker compose up -d --no-deps gateway`로 재생성한다. 이 조치는 이미 제공업체에 전송된 요청의 비용·처리를 취소하지 않는다. 긴급 중단은 `docker compose stop gateway`다. 전체 정지는 `docker compose down`이며 데이터 볼륨을 보존한다. `down -v`, 볼륨 삭제, DB 교체는 데이터 파괴 작업이므로 별도 승인·백업 없이 실행하지 않는다.

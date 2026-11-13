@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
 import * as fullSource from './full-source.js';
+import {createCliClient} from './ai-correction.js';
 const source=(await readFile(new URL('./offscreen.js',import.meta.url),'utf8')).replace(/^import[^\n]+\n/gm,'');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};}
@@ -24,7 +25,10 @@ function harness(config={}){
     async resume(){if(config.resumeError)throw new Error('resume failed');}
     async close(){this.closed++;}
   }
-  const sandbox={...fullSource,async boundedDownload(url,options){if(config.downloadGate)await config.downloadGate;if(options.signal.aborted)throw new DOMException('aborted','AbortError');if(config.downloadError)throw new Error('download failed');return new Blob(['x'.repeat(3000)]);},DOMException,chrome:{runtime:{onMessage:{addListener(fn){receiver=fn;}},async sendMessage(message){messages.push(message);if(config.messageGate&&message.type==='CAPTURE_ANALYZING')await config.messageGate;if(message.type==='FULL_AUDIO_LOOKUP')return {ok:true,source:{videoId:'abcdefghijk',duration:361,url:'https://r1.googlevideo.com/videoplayback',transport:'youtube-page-visionos'}};return {ok:true};}}},navigator:{mediaDevices:{async getUserMedia(options){assert.equal(options.video,false);assert.equal(options.audio.mandatory.chromeMediaSource,'tab');if(config.mediaGate)await config.mediaGate;return makeStream();}}},AudioContext:Context,MediaRecorder:Recorder,Blob,FormData,AbortController,AbortSignal,Float32Array,Math,Number,Date:class extends Date{static now(){return now;}},performance:{now:()=>now},setTimeout(fn,ms){const entry={fn,ms,cleared:false};timers.push(entry);return entry;},clearTimeout(entry){if(entry)entry.cleared=true;},setInterval(fn,ms){const entry={fn,ms,cleared:false};intervals.push(entry);return entry;},clearInterval(entry){if(entry)entry.cleared=true;},async analyzeRecording(args){requests.push(args);args.onProgress({progress:.25,message:'모델 다운로드 중'});if(config.analysisGate)await config.analysisGate;if(config.analysisError)throw new Error('model failed');return {schema_version:'1.0',video_id:args.videoId,title:args.title,duration:30,cues:[],warnings:[],metadata:{audio_analyzed:true}};}};
+  const sandbox={...fullSource,createCliClient,async boundedDownload(url,options){if(config.downloadGate)await config.downloadGate;if(options.signal.aborted)throw new DOMException('aborted','AbortError');if(config.downloadError)throw new Error('download failed');return new Blob(['x'.repeat(3000)]);},DOMException,chrome:{runtime:{onMessage:{addListener(fn){receiver=fn;}},async sendMessage(message){messages.push(message);if(config.messageGate&&message.type==='CAPTURE_ANALYZING')await config.messageGate;if(message.type==='FULL_AUDIO_LOOKUP')return {ok:true,source:{videoId:'abcdefghijk',duration:361,url:'https://r1.googlevideo.com/videoplayback',transport:'youtube-page-visionos'}};return {ok:true};}}},navigator:{mediaDevices:{async getUserMedia(options){assert.equal(options.video,false);assert.equal(options.audio.mandatory.chromeMediaSource,'tab');if(config.mediaGate)await config.mediaGate;return makeStream();}}},AudioContext:Context,MediaRecorder:Recorder,Blob,FormData,AbortController,AbortSignal,Float32Array,Math,Number,Date:class extends Date{static now(){return now;}},performance:{now:()=>now},setTimeout(fn,ms){const entry={fn,ms,cleared:false};timers.push(entry);return entry;},clearTimeout(entry){if(entry)entry.cleared=true;},setInterval(fn,ms){const entry={fn,ms,cleared:false};intervals.push(entry);return entry;},clearInterval(entry){if(entry)entry.cleared=true;},async analyzeRecording(args){requests.push(args);args.onProgress({progress:.25,message:'모델 다운로드 중'});if(config.analysisGate)await config.analysisGate;if(config.analysisError)throw new Error('model failed');return {schema_version:'1.0',video_id:args.videoId,title:args.title,duration:30,cues:[],warnings:[],metadata:{audio_analyzed:true}};},
+    async analyzeFullStreaming(args){requests.push({...args,scope:'full-video',streaming:true});args.onProgress({progress:.25,message:'분석 중'});const doc=partial=>({schema_version:'1.0',video_id:args.videoId,title:args.title,duration:args.expectedDuration,cues:[],warnings:[],metadata:{audio_analyzed:true,progressive:true,partial,analysis_scope:'full-video'}});
+      for(let i=0;i<(config.minutes??0);i++){if(config.analysisGate)await config.analysisGate;await args.onChunk(doc(true),{remaining:config.minutes-i});}
+      if(config.analysisError)throw new Error('model failed');return doc(false);}};
   sandbox.acquireAudio=async(source,options)=>{if(config.pageLookup)source=await options.lookup();return {source,blob:await sandbox.boundedDownload(source.url,options)};};
   vm.runInNewContext(source,sandbox);
   const send=payload=>new Promise(resolve=>receiver({target:'offscreen',...payload},{},resolve));
@@ -91,7 +95,7 @@ test('stale discard during inference does not abort the replacement capture',asy
 
 test('full video download analyzes complete source without MediaRecorder and supports cancellation',async()=>{
  const source={url:'https://r1.googlevideo.com/videoplayback?id=test',videoId:'abcdefghijk',title:'전체',duration:361};
- const h=harness();await h.send({type:'FULL_ANALYZE',captureId:'whole',source,options:{language:'ko'}});await tick();assert.equal(h.recorders.length,0);assert.equal(h.requests[0].scope,'full-video');assert.equal(h.requests[0].expectedDuration,361);assert.equal(h.requests[0].startTime,0);assert.equal(h.messages.at(-1).type,'ANALYSIS_COMPLETE');
+ const h=harness();await h.send({type:'FULL_ANALYZE',captureId:'whole',source,options:{language:'ko'}});await tick();assert.equal(h.recorders.length,0);assert.equal(h.requests[0].streaming,true);assert.equal(h.requests[0].expectedDuration,361);assert.equal(typeof h.requests[0].position,'function');assert.equal(h.requests[0].correction,null);assert.equal(h.messages.at(-1).type,'ANALYSIS_COMPLETE');
  const gate=deferred(),c=harness({downloadGate:gate.promise});await c.send({type:'FULL_ANALYZE',captureId:'whole',source});await c.send({type:'CAPTURE_DISCARD',captureId:'whole'});gate.resolve();await tick();assert.equal(c.requests.length,0);assert.equal(c.messages.some(m=>m.type==='ANALYSIS_COMPLETE'),false);
 });
 test('whole download failure does not fall through to tab recording',async()=>{
@@ -101,4 +105,26 @@ test('whole download failure does not fall through to tab recording',async()=>{
 test('offscreen delegates player lookup to the page through the session-bound worker relay',async()=>{
  const h=harness({pageLookup:true});await h.send({type:'FULL_ANALYZE',captureId:'whole',source:{videoId:'abcdefghijk',duration:361},options:{language:'ko'}});await tick();
  assert.equal(h.messages.find(m=>m.type==='FULL_AUDIO_LOOKUP').captureId,'whole');assert.equal(h.messages.at(-1).document.metadata.audio_transport,'youtube-page-visionos');assert.equal(h.recorders.length,0);
+});
+
+test('streaming analysis saves each finished minute, asks for the playhead and passes key and resume only to analysis',async()=>{
+ const source={url:'https://r1.googlevideo.com/videoplayback?id=test',videoId:'abcdefghijk',title:'전체',duration:361},resume={video_id:'abcdefghijk',metadata:{progressive:true,partial:true}};
+ const h=harness({minutes:2});await h.send({type:'FULL_ANALYZE',captureId:'whole',source,options:{language:'ko'},correction:{enabled:true,apiKey:'sk-ant-test',model:'claude-haiku-5-5'},resume});await tick();
+ const chunks=h.messages.filter(m=>m.type==='ANALYSIS_CHUNK');assert.equal(chunks.length,2);assert.ok(chunks.every(m=>m.captureId==='whole'&&m.document.metadata.partial===true&&m.document.metadata.audio_transport));
+ assert.equal(h.messages.at(-1).type,'ANALYSIS_COMPLETE');assert.equal(h.messages.at(-1).document.metadata.partial,false);
+ assert.deepEqual(JSON.parse(JSON.stringify(h.requests[0].correction)),{enabled:true,apiKey:'sk-ant-test',model:'claude-haiku-5-5'});assert.equal(h.requests[0].resume,resume);
+ await h.requests[0].position();assert.ok(h.messages.some(m=>m.type==='PLAYBACK_POSITION'&&m.captureId==='whole'));
+ const gate=deferred(),c=harness({minutes:2,analysisGate:gate.promise});await c.send({type:'FULL_ANALYZE',captureId:'whole',source});await tick();await c.send({type:'CAPTURE_DISCARD',captureId:'whole'});gate.resolve();await tick();await tick();
+ assert.equal(c.messages.some(m=>m.type==='ANALYSIS_CHUNK'||m.type==='ANALYSIS_COMPLETE'),false);
+});
+test('tab recording passes the correction setting with its own capture',async()=>{
+ const h=harness();await h.prepare();await h.record('one',{correction:{enabled:true,apiKey:'sk-ant-test'}});h.recorders[0].chunk();await h.recorders[0].finish();await tick();
+ assert.deepEqual(JSON.parse(JSON.stringify(h.requests[0].correction)),{enabled:true,apiKey:'sk-ant-test'});
+});
+test('Claude Code mode sends no key; corrections go back through the session-bound worker relay',async()=>{
+ const source={url:'https://r1.googlevideo.com/videoplayback?id=test',videoId:'abcdefghijk',title:'전체',duration:361};
+ const h=harness();await h.send({type:'FULL_ANALYZE',captureId:'whole',source,options:{language:'ko'},correction:{enabled:true,provider:'cli',model:'claude-haiku-5-5',apiKey:'sk-ant-ignored'}});await tick();
+ const correction=h.requests[0].correction;assert.equal(correction.provider,'cli');assert.equal(correction.apiKey,undefined);assert.equal(typeof correction.client.messages.create,'function');
+ await correction.client.messages.create({messages:[{content:JSON.stringify({title:'전체',context:[],lines:[{id:'a',text:'대사'}]})}]}).catch(()=>{});
+ const relay=h.messages.find(m=>m.type==='CLI_CORRECT');assert.equal(relay.captureId,'whole');assert.deepEqual(relay.payload.lines,[{id:'a',text:'대사'}]);
 });

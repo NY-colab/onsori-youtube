@@ -5,19 +5,27 @@ import {webgpuReady,engineProfiles,maxNewTokens} from './browser-engine-device.j
 
 // A dedicated worker keeps WASM/WebGPU execution off the offscreen document/UI thread.
 // Terminating this worker is the cancellation boundary, including model loading.
+// A one-shot request frees each model as soon as it is used. A streaming session sends
+// keep:true for every minute, so loaded models are reused until the session ends.
+let runtime=null,models={key:null,asr:null,events:null},profiles=null,profileIndex=0,gpuFallback=null;
+async function setup(){
+  if(runtime)return runtime;
+  const {pipeline,env}=await import('./vendor/transformers/transformers.min.js');
+  env.allowLocalModels=false;
+  env.allowRemoteModels=true;
+  env.useBrowserCache=true;
+  env.backends.onnx.wasm.wasmPaths=new URL('./vendor/transformers/',import.meta.url).href;
+  env.backends.onnx.wasm.numThreads=1; // MV3 pages are not cross-origin isolated.
+  env.backends.onnx.wasm.proxy=false;
+  runtime={pipeline};return runtime;
+}
+async function release(){try{await models.asr?.dispose();}catch{}try{await models.events?.dispose();}catch{}models={key:null,asr:null,events:null};}
 self.onmessage=async ({data})=>{
   if(data?.type!=='analyze')return;
-  let asr,events;
+  const keep=data.keep===true;
   const progress=(value,message)=>self.postMessage({type:'progress',progress:value,message});
-  const release=async()=>{try{await asr?.dispose();await events?.dispose();}catch{}asr=events=null;};
   try{
-    const {pipeline,env}=await import('./vendor/transformers/transformers.min.js');
-    env.allowLocalModels=false;
-    env.allowRemoteModels=true;
-    env.useBrowserCache=true;
-    env.backends.onnx.wasm.wasmPaths=new URL('./vendor/transformers/',import.meta.url).href;
-    env.backends.onnx.wasm.numThreads=1; // MV3 pages are not cross-origin isolated.
-    env.backends.onnx.wasm.proxy=false;
+    const {pipeline}=await setup();
     const pcm=new Float32Array(data.pcm), duration=pcm.length/MODEL_CONFIG.sampleRate;
     const reportDownload=(base,label)=>{let last=0;return event=>{
       if(event.status==='progress'){
@@ -28,14 +36,18 @@ self.onmessage=async ({data})=>{
     };};
     const run=async ({device,whisper,events:eventModel,asrWindow})=>{
       const gpu=device==='webgpu',where=gpu?'GPU':'브라우저',gated=asrWindow.gate==='speech'&&data.events!==false;
+      const key=`${device}|${whisper.id}|${eventModel.id}`;if(models.key!==key){await release();models.key=key;}
       // Progress bands: AST runs first when it decides where Whisper listens.
       const [asrBand,astBand]=gated?[[.46,.7],[.22,.44]]:[[.22,.42],[.5,.7]];
       const classify=async ()=>{
         // Windows already measured on this device (cloud speech fell back) are reused as-is.
         if(Array.isArray(data.windows))return data.windows;
         const windows=[];if(data.events===false)return windows;
-        progress(astBand[0]-.04,'음악·효과음 AST 모델 준비 중');
-        events=await pipeline('audio-classification',eventModel.id,{revision:eventModel.revision,dtype:eventModel.dtype,device,progress_callback:reportDownload(astBand[0]-.02,'음향')});
+        if(!models.events){
+          progress(astBand[0]-.04,'음악·효과음 AST 모델 준비 중');
+          models.events=await pipeline('audio-classification',eventModel.id,{revision:eventModel.revision,dtype:eventModel.dtype,device,progress_callback:reportDownload(astBand[0]-.02,'음향')});
+        }
+        const events=models.events;
         for(let start=0;start<duration;start+=2){
           const end=Math.min(start+2,duration),samples=pcm.subarray(Math.floor(start*16000),Math.floor(end*16000));
           // Silence is measured, never converted into invented classifier labels.
@@ -49,15 +61,18 @@ self.onmessage=async ({data})=>{
           }
           progress(astBand[0]+(astBand[1]-astBand[0])*end/duration,`음악·효과음 분석 ${Math.round(end)}/${Math.ceil(duration)}초`);
         }
-        // Free each model before loading the next: two sessions need not coexist.
-        await events.dispose();events=null;
+        // One-shot: free each model before loading the next, so two sessions need not coexist.
+        if(!keep){await models.events.dispose();models.events=null;}
         return windows;
       };
       const transcribe=async plan=>{
         // Cloud speech: this device measures music and effects only.
         if(data.asr===false)return {text:'',chunks:[],diagnostics:{method:'speech analyzed by the cloud',windows:0,rejected:[]}};
-        progress(asrBand[0]-.14,gpu?`GPU로 한국어 Whisper 모델 준비 중 (첫 실행은 약 ${MODEL_CONFIG.gpu.downloadMB}MB를 내려받습니다)`:'브라우저에서 한국어 Whisper 모델 준비 중 (첫 실행은 모델을 내려받습니다)');
-        asr=await pipeline('automatic-speech-recognition',whisper.id,{revision:whisper.revision,dtype:whisper.dtype,device,progress_callback:reportDownload(asrBand[0]-.12,'대사')});
+        if(!models.asr){
+          progress(asrBand[0]-.14,gpu?`GPU로 한국어 Whisper 모델 준비 중 (첫 실행은 약 ${MODEL_CONFIG.gpu.downloadMB}MB를 내려받습니다)`:'브라우저에서 한국어 Whisper 모델 준비 중 (첫 실행은 모델을 내려받습니다)');
+          models.asr=await pipeline('automatic-speech-recognition',whisper.id,{revision:whisper.revision,dtype:whisper.dtype,device,progress_callback:reportDownload(asrBand[0]-.12,'대사')});
+        }
+        const asr=models.asr;
         progress(asrBand[0],`${where}에서 한국어 대사와 시각 분석 중`);
         const heard=[];
         for(const {start,end} of plan){
@@ -71,7 +86,7 @@ self.onmessage=async ({data})=>{
           progress(asrBand[0]+(asrBand[1]-asrBand[0])*end/duration,`한국어 대사 분석 ${Math.ceil(end)}/${Math.ceil(duration)}초`);
         }
         const output=mergeAsrWindows(heard);
-        await asr.dispose();asr=null;
+        if(!keep){await models.asr.dispose();models.asr=null;}
         return output;
       };
       if(gated){const windows=await classify();return {asr:await transcribe(speechWindows(windows,duration,asrWindow)),windows};}
@@ -79,20 +94,21 @@ self.onmessage=async ({data})=>{
       const output=await transcribe(gridWindows(duration,asrWindow));
       return {asr:output,windows:await classify()};
     };
-    const profiles=engineProfiles(await webgpuReady(),data.device);
-    let fallback=null;
-    for(const [index,profile] of profiles.entries()){
+    profiles??=engineProfiles(await webgpuReady(),data.device);
+    // A session that already fell back to the CPU stays there for its remaining minutes.
+    for(let index=profileIndex;index<profiles.length;index++){
+      const profile=profiles[index];
       try{
-        const result=await run(profile);
-        self.postMessage({type:'result',...result,runtime:{device:profile.device,whisper:profile.whisper,events:profile.events,asr_window:profile.asrWindow,gpu_fallback:fallback}});
+        const result=await run(profile);profileIndex=index;
+        self.postMessage({type:'result',...result,runtime:{device:profile.device,whisper:profile.whisper,events:profile.events,asr_window:profile.asrWindow,gpu_fallback:gpuFallback}});
         return;
       }catch(error){
         await release();
         if(index===profiles.length-1)throw error;
-        fallback=String(error?.message||error).slice(0,300);
+        gpuFallback=String(error?.message||error).slice(0,300);profileIndex=index+1;
         progress(.08,'GPU 가속을 사용할 수 없어 CPU로 처음부터 다시 분석합니다');
       }
     }
   }catch(error){self.postMessage({type:'error',message:`브라우저 AI 분석 실패: ${error?.message||String(error)}`});}
-  finally{await release();}
+  finally{if(!keep)await release();}
 };

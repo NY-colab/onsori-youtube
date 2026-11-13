@@ -1,6 +1,6 @@
 {
   "generated_by": "node scripts/build_browser.mjs",
-  "lockfile_sha256": "07a8fe22b1169cdbfe49eeac0f33990c34f026c2e69db738c3f14b095592d170",
+  "lockfile_sha256": "6f7df2794d3df2038169c25ec46703c5796603e4e640d673e79d155764cc4896",
   "files": [
     {
       "path": "transformers/transformers.min.js",
@@ -36,6 +36,11 @@
       "path": "tesseract/tesseract-core-simd-lstm.wasm.js",
       "size": 3954569,
       "sha256": "9d7c43fb206dc9f48475228b46bf35f888fa9e6259da2e67d5a75c77049f2dc7"
+    },
+    {
+      "path": "anthropic/anthropic-sdk.mjs",
+      "size": 358237,
+      "sha256": "b1dd8b6330192939e8e312005aa1d11652af21d4294f8d8af03be7c2cb7b1295"
     }
   ],
   "tesseract_adapter_sha256": "6a42143d5afbce76604b716ad57de94688d88aeecb9a4ba630cfd991eb42cf08"

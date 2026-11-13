@@ -25,6 +25,7 @@ from typing import Any, Callable
 import uuid
 import wave
 
+import anthropic
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -44,6 +45,62 @@ INSTALL_KEY = re.compile(r"osi_[A-Za-z0-9_-]{43}")
 # Any unpacked or store-installed Chrome extension may call the user routes;
 # install keys, not CORS, are the access control.
 EXTENSION_ORIGIN = r"chrome-extension://[a-p]{32}"
+
+# Caption typo correction (2026-11-13): recognized caption TEXT only, never audio. The
+# operator's provider key (DeepInfra or Anthropic) stays on this server; installs reach it
+# with their own install keys. Prompt and schema are kept identical to extension/ai-config.js
+# (a test compares them).
+ANTHROPIC_CORRECTION_MODEL = "claude-haiku-5-5"
+# DeepInfra's OpenAI-compatible endpoint (docs.deepinfra.com/chat/overview, checked 2026-11-13).
+# DeepInfra keeps request content in memory only and does not train on it (account/data-privacy).
+DEEPINFRA_CHAT_URL = "https://api.deepinfra.com/v1/openai/chat/completions"
+DEEPINFRA_CORRECTION_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731"
+CORRECTION_REASONING = ("none", "minimal", "low", "medium", "high", "default")
+MAX_CORRECTION_LINES = 80
+MAX_CORRECTION_BODY = 64 * 1024
+MAX_CORRECTION_REPLY = 1024 * 1024
+CORRECTION_TIMEOUT_SECONDS = 60
+CORRECTION_SYSTEM = """당신은 한국어 유튜브 자막 교정자입니다.
+입력은 음성 인식(Whisper)이 만든 자막 줄입니다. 인식 오류로 생긴 오타만 고칩니다.
+
+고칠 것:
+- 철자·맞춤법 오류, 잘못 붙거나 띄운 띄어쓰기
+- 발음이 비슷해 잘못 인식한 낱말 중 앞뒤 문맥과 영상 제목으로 볼 때 명백히 틀린 것 (예: 고유명사, 전문 용어)
+- 문장 끝의 명백히 잘못된 문장부호
+
+지킬 것:
+- 말한 내용을 바꾸거나 다듬지 않습니다. 요약·의역·번역·문체 변경·존댓말 변경을 하지 않습니다.
+- 사투리, 구어체, 줄임말, 감탄사, 말 더듬기, 비속어는 그대로 둡니다.
+- 줄을 합치거나 나누지 않고, 없는 말을 보태지 않습니다.
+- 확실하지 않으면 고치지 않습니다.
+- context는 바로 앞 자막으로, 문맥 참고용입니다. context는 고치지 않습니다.
+
+고친 줄만 corrections에 {"id", "text"}로 돌려줍니다. text는 고친 뒤의 줄 전체입니다. 고칠 줄이 없으면 빈 배열을 돌려줍니다."""
+CORRECTION_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["corrections"],
+                     "properties": {"corrections": {"type": "array", "items": {
+                         "type": "object", "additionalProperties": False, "required": ["id", "text"],
+                         "properties": {"id": {"type": "string"}, "text": {"type": "string"}}}}}}
+
+
+def correction_payload(value: Any) -> dict:
+    """The only accepted input: caption lines, the video title and up to four context lines."""
+    if not isinstance(value, dict):
+        raise HTTPException(422, "invalid_correction_payload")
+    lines = value.get("lines")
+    if not isinstance(lines, list) or len(lines) > MAX_CORRECTION_LINES:
+        raise HTTPException(422, "invalid_correction_lines")
+    clean = []
+    for line in lines:
+        if (not isinstance(line, dict) or not isinstance(line.get("id"), str) or not 0 < len(line["id"]) <= 100
+                or not isinstance(line.get("text"), str) or len(line["text"]) > 2000 or "\x00" in line["text"]):
+            raise HTTPException(422, "invalid_correction_lines")
+        clean.append({"id": line["id"], "text": line["text"]})
+    title = value.get("title", "")
+    context = value.get("context", [])
+    if not isinstance(title, str) or len(title) > 300 or not isinstance(context, list) or len(context) > 4 \
+            or any(not isinstance(c, str) or len(c) > 500 for c in context):
+        raise HTTPException(422, "invalid_correction_payload")
+    return {"title": title, "context": context, "lines": clean}
 
 
 def utc_day(now: float | None = None) -> str:
@@ -70,6 +127,12 @@ class Settings:
     result_ttl_seconds: float = 86400
     sweep_interval_seconds: float = 60
     provider_timeout_seconds: float = 180
+    correction: str = "disabled"
+    anthropic_api_key: str = ""
+    correction_model: str = ""  # DeepInfra model; empty means DEEPINFRA_CORRECTION_MODEL.
+    correction_reasoning: str = "none"  # DeepInfra reasoning_effort; "default" omits it.
+    daily_correction_lines: int = 20000
+    install_daily_correction_lines: int = 3000
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -90,6 +153,12 @@ class Settings:
             result_ttl_seconds=float(os.getenv("ONSORI_RESULT_TTL_SECONDS", "86400")),
             sweep_interval_seconds=float(os.getenv("ONSORI_SWEEP_INTERVAL_SECONDS", "60")),
             provider_timeout_seconds=float(os.getenv("ONSORI_PROVIDER_TIMEOUT_SECONDS", "180")),
+            correction=os.getenv("ONSORI_CORRECTION", "disabled"),
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
+            correction_model=os.getenv("ONSORI_CORRECTION_MODEL", ""),
+            correction_reasoning=os.getenv("ONSORI_CORRECTION_REASONING", "none"),
+            daily_correction_lines=int(os.getenv("ONSORI_DAILY_CORRECTION_LINES", "20000")),
+            install_daily_correction_lines=int(os.getenv("ONSORI_INSTALL_DAILY_CORRECTION_LINES", "3000")),
         )
 
     def validate(self) -> None:
@@ -104,6 +173,20 @@ class Settings:
             raise ValueError("DEEPINFRA_API_KEY is required for paid inference")
         if not 1 <= self.max_queue <= 32:
             raise ValueError("ONSORI_MAX_QUEUE must be 1..32")
+        if self.correction not in ("disabled", "mock", "anthropic", "deepinfra"):
+            raise ValueError("Unsupported ONSORI_CORRECTION")
+        if self.correction == "anthropic" and not re.fullmatch(r"sk-ant-[A-Za-z0-9_-]{20,300}", self.anthropic_api_key):
+            raise ValueError("ANTHROPIC_API_KEY is required for caption correction")
+        if self.correction == "deepinfra":
+            # The same DEEPINFRA_API_KEY serves speech (ONSORI_PROVIDER) and correction.
+            if not re.fullmatch(r"[\x21-\x7e]{16,512}", self.deepinfra_api_key):
+                raise ValueError("DEEPINFRA_API_KEY is required for caption correction")
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}", self.correction_model_name):
+                raise ValueError("ONSORI_CORRECTION_MODEL must be a DeepInfra model id such as owner/name")
+            if self.correction_reasoning not in CORRECTION_REASONING:
+                raise ValueError("ONSORI_CORRECTION_REASONING must be one of " + ", ".join(CORRECTION_REASONING))
+        if not 1 <= self.install_daily_correction_lines <= self.daily_correction_lines <= 1_000_000:
+            raise ValueError("Correction line limits must satisfy 1 <= install <= server <= 1000000")
         if not 1 <= self.installs_per_ip_day <= 100:
             raise ValueError("ONSORI_INSTALLS_PER_IP_DAY must be 1..100")
         for value in (self.daily_audio_minutes, self.install_daily_audio_minutes, self.result_ttl_seconds,
@@ -115,9 +198,45 @@ class Settings:
     def enabled(self) -> bool:
         return self.provider == "mock" or (self.provider == "deepinfra" and self.allow_paid)
 
+    @property
+    def correction_enabled(self) -> bool:
+        return (self.correction == "mock" or (self.correction == "anthropic" and bool(self.anthropic_api_key))
+                or (self.correction == "deepinfra" and bool(self.deepinfra_api_key)))
+
+    @property
+    def correction_model_name(self) -> str | None:
+        """The model named to installs in /v1/availability and used for the request."""
+        return {"anthropic": ANTHROPIC_CORRECTION_MODEL, "deepinfra": self.correction_model or DEEPINFRA_CORRECTION_MODEL,
+                "mock": "mock"}.get(self.correction)
+
 
 class ProviderFailure(Exception):
     """Only controlled error codes are safe to persist or return."""
+
+
+class CorrectionFailure(Exception):
+    """A correction provider call failed; carries only a fixed HTTP status and code."""
+
+    def __init__(self, status: int, code: str):
+        super().__init__(code)
+        self.status, self.code = status, code
+
+
+@dataclass(frozen=True)
+class CorrectionReply:
+    """One provider answer, normalized: stop is 'end', 'refusal' or 'truncated'."""
+    stop: str
+    text: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+
+
+# HTTP status from DeepInfra -> fixed gateway status and code (response bodies are never read).
+DEEPINFRA_FAILURES = {400: (502, "correction_bad_request"), 401: (503, "correction_provider_auth"),
+                      402: (503, "correction_provider_billing"), 403: (503, "correction_provider_auth"),
+                      404: (503, "correction_model_unavailable"), 422: (502, "correction_bad_request"),
+                      429: (429, "correction_rate_limited")}
 
 
 class BodyTooLarge(MultiPartException):
@@ -259,9 +378,13 @@ class InstanceLock:
 
 
 class Gateway:
-    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None,
+                 correction_client: Any = None):
         self.settings = settings
-        self.transport = transport  # Only dependency injection in tests; endpoint is fixed.
+        self.transport = transport  # Only dependency injection in tests; endpoints are fixed.
+        # Tests inject a fake Anthropic client; DeepInfra tests inject `transport` instead.
+        self.correction_client = correction_client
+        self.correction_slots = asyncio.Semaphore(4)
         self.directory = settings.data_dir.resolve()
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=settings.max_queue)
         self.submit_lock = asyncio.Lock()
@@ -296,6 +419,10 @@ class Gateway:
                   id TEXT PRIMARY KEY, key_hash TEXT UNIQUE NOT NULL, created_at REAL NOT NULL,
                   day TEXT NOT NULL, ip_hash TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS correction_usage (
+                  day TEXT NOT NULL, install_id TEXT NOT NULL, lines INTEGER NOT NULL,
+                  PRIMARY KEY (day, install_id)
+                );
             """)
             # Databases from before install keys gain the owner column in place.
             if "install_id" not in {r[1] for r in self.db.execute("PRAGMA table_info(jobs)")}:
@@ -310,6 +437,14 @@ class Gateway:
             for path in self.directory.glob("*.wav"):
                 path.unlink(missing_ok=True)
             self.sweep()
+            if self.settings.correction == "anthropic" and self.correction_client is None:
+                self.correction_client = anthropic.AsyncAnthropic(api_key=self.settings.anthropic_api_key,
+                                                                  max_retries=2, timeout=CORRECTION_TIMEOUT_SECONDS)
+            if self.settings.correction == "deepinfra" and self.correction_client is None:
+                # No automatic retries: a repeated request could be billed twice.
+                self.correction_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(CORRECTION_TIMEOUT_SECONDS, connect=10), follow_redirects=False,
+                    trust_env=False, transport=self.transport)
             self.worker_task = asyncio.create_task(self.worker())
             self.sweeper_task = asyncio.create_task(self.sweeper())
         except BaseException:
@@ -329,6 +464,10 @@ class Gateway:
         self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.db.close()
         self.lock.close()
+        close = getattr(self.correction_client, "aclose", None) or getattr(self.correction_client, "close", None)
+        if close is not None:
+            with suppress(Exception):
+                await close()
 
     def row(self, job_id: str, install_id: str | None = None) -> sqlite3.Row:
         row = self.db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -531,6 +670,136 @@ class Gateway:
                 self.active_call = None
                 self.queue.task_done()
 
+    def reserve_correction(self, install_id: str | None, lines: int) -> None:
+        """Durable before the external request; a reservation is not refunded on failure."""
+        day = utc_day()
+        owner = install_id or ""
+        with self.db:
+            used = self.db.execute("SELECT COALESCE(SUM(lines),0) FROM correction_usage WHERE day=?", (day,)).fetchall()[0][0]
+            mine = self.db.execute("SELECT COALESCE(SUM(lines),0) FROM correction_usage WHERE day=? AND install_id=?",
+                                   (day, owner)).fetchall()[0][0]
+            refused = None
+            if used + lines > self.settings.daily_correction_lines:
+                refused = "daily_correction_limit"
+            elif install_id is not None and mine + lines > self.settings.install_daily_correction_lines:
+                refused = "install_daily_correction_limit"
+            if refused:
+                self.count("limit_rejections")
+                raise HTTPException(429, refused)
+            self.db.execute("INSERT INTO correction_usage(day,install_id,lines) VALUES (?,?,?) ON CONFLICT(day,install_id) "
+                            "DO UPDATE SET lines=lines+excluded.lines", (day, owner, lines))
+            self.count("correction_lines", lines)
+
+    async def correct(self, value: Any, install_id: str | None) -> dict:
+        if not self.settings.correction_enabled:
+            raise HTTPException(503, "correction_disabled")
+        payload = correction_payload(value)
+        if not payload["lines"]:
+            return {"corrections": [], "model": None, "usage": None}
+        self.reserve_correction(install_id, len(payload["lines"]))
+        if self.settings.correction == "mock":
+            with self.db:
+                self.count("correction_requests")
+            return {"corrections": [], "model": "mock", "usage": None, "synthetic": True}
+        call = self.correct_with_deepinfra if self.settings.correction == "deepinfra" else self.correct_with_anthropic
+        async with self.correction_slots:
+            try:
+                reply = await call(payload)
+            except CorrectionFailure as failure:
+                # Error text may echo caption content or credentials: only fixed codes leave here.
+                with self.db:
+                    self.count("correction_failures")
+                raise HTTPException(failure.status, failure.code) from None
+        if reply.stop == "refusal":
+            raise HTTPException(422, "correction_refused")
+        if reply.stop == "truncated":
+            raise HTTPException(502, "correction_truncated")
+        try:
+            data = json.loads(reply.text)
+        except (ValueError, TypeError):
+            raise HTTPException(502, "correction_invalid_output") from None
+        if not isinstance(data, dict) or not isinstance(data.get("corrections", []), list):
+            raise HTTPException(502, "correction_invalid_output")
+        ids = {line["id"] for line in payload["lines"]}
+        corrections = [{"id": c["id"], "text": c["text"][:2000]} for c in data.get("corrections", [])
+                       if isinstance(c, dict) and c.get("id") in ids and isinstance(c.get("text"), str)]
+        usage = {"input_tokens": reply.input_tokens, "output_tokens": reply.output_tokens}
+        with self.db:
+            self.count("correction_requests")
+            self.count("correction_input_tokens", usage["input_tokens"])
+            self.count("correction_output_tokens", usage["output_tokens"])
+        return {"corrections": corrections, "model": reply.model, "usage": usage}
+
+    async def correct_with_anthropic(self, payload: dict) -> CorrectionReply:
+        try:
+            response = await self.correction_client.messages.create(
+                model=ANTHROPIC_CORRECTION_MODEL, max_tokens=16000, system=CORRECTION_SYSTEM,
+                output_config={"effort": "low", "format": {"type": "json_schema", "schema": CORRECTION_SCHEMA}},
+                messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}])
+        except anthropic.RateLimitError:
+            raise CorrectionFailure(429, "correction_rate_limited") from None
+        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
+            raise CorrectionFailure(503, "correction_provider_auth") from None
+        except anthropic.NotFoundError:
+            raise CorrectionFailure(503, "correction_model_unavailable") from None
+        except anthropic.BadRequestError:
+            raise CorrectionFailure(502, "correction_bad_request") from None
+        except anthropic.APITimeoutError:
+            raise CorrectionFailure(504, "correction_timeout") from None
+        except anthropic.APIStatusError:
+            raise CorrectionFailure(502, "correction_provider_error") from None
+        except anthropic.APIConnectionError:
+            raise CorrectionFailure(502, "correction_network_error") from None
+        try:
+            text = "".join(block.text for block in response.content if block.type == "text")
+        except (AttributeError, TypeError):
+            text = ""
+        return CorrectionReply(stop={"refusal": "refusal", "max_tokens": "truncated"}.get(response.stop_reason, "end"),
+                               text=text, model=response.model,
+                               input_tokens=getattr(response.usage, "input_tokens", 0) or 0,
+                               output_tokens=getattr(response.usage, "output_tokens", 0) or 0)
+
+    async def correct_with_deepinfra(self, payload: dict) -> CorrectionReply:
+        model = self.settings.correction_model_name
+        body = {"model": model, "temperature": 0, "max_tokens": 16000,
+                "messages": [{"role": "system", "content": CORRECTION_SYSTEM},
+                             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+                "response_format": {"type": "json_schema", "json_schema": {
+                    "name": "caption_corrections", "strict": True, "schema": CORRECTION_SCHEMA}}}
+        if self.settings.correction_reasoning != "default":
+            body["reasoning_effort"] = self.settings.correction_reasoning
+        raw = bytearray()
+        try:
+            async with self.correction_client.stream(
+                    "POST", DEEPINFRA_CHAT_URL, json=body,
+                    headers={"Authorization": "Bearer " + self.settings.deepinfra_api_key}) as response:
+                if response.status_code != 200:
+                    # The body is not read: it may echo the request (caption text).
+                    raise CorrectionFailure(*DEEPINFRA_FAILURES.get(response.status_code, (502, "correction_provider_error")))
+                async for chunk in response.aiter_bytes():
+                    if len(raw) + len(chunk) > MAX_CORRECTION_REPLY:
+                        raise CorrectionFailure(502, "correction_provider_error")
+                    raw.extend(chunk)
+        except httpx.TimeoutException:
+            raise CorrectionFailure(504, "correction_timeout") from None
+        except httpx.HTTPError:
+            raise CorrectionFailure(502, "correction_network_error") from None
+        try:
+            reply = json.loads(raw)
+            choice = reply["choices"][0]
+            finish, text = choice.get("finish_reason"), choice["message"].get("content")
+        except (ValueError, UnicodeError, KeyError, IndexError, TypeError, AttributeError):
+            raise CorrectionFailure(502, "correction_invalid_output") from None
+        usage = reply.get("usage") if isinstance(reply.get("usage"), dict) else {}
+        tokens = [usage.get(name) for name in ("prompt_tokens", "completion_tokens")]
+        tokens = [t if isinstance(t, int) and t >= 0 else 0 for t in tokens]
+        return CorrectionReply(stop={"length": "truncated", "content_filter": "refusal"}.get(finish, "end"),
+                               text=text if isinstance(text, str) else "",
+                               # Named to installs and recorded in captions: only a plain model id.
+                               model=reply["model"] if isinstance(reply.get("model"), str)
+                               and re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", reply["model"]) else model,
+                               input_tokens=tokens[0], output_tokens=tokens[1])
+
     def cancel(self, job_id: str, install_id: str | None = None) -> dict:
         row = self.row(job_id, install_id)
         if row["status"] not in TERMINAL:
@@ -575,14 +844,24 @@ class Gateway:
                   "# TYPE onsori_installs_issued_total counter",
                   f'onsori_installs_issued_total {counters.get("installs_issued", 0):g}',
                   "# TYPE onsori_limit_rejections_total counter",
-                  f'onsori_limit_rejections_total {counters.get("limit_rejections", 0):g}']
+                  f'onsori_limit_rejections_total {counters.get("limit_rejections", 0):g}',
+                  "# TYPE onsori_correction_requests_total counter",
+                  f'onsori_correction_requests_total {counters.get("correction_requests", 0):g}',
+                  "# TYPE onsori_correction_failures_total counter",
+                  f'onsori_correction_failures_total {counters.get("correction_failures", 0):g}',
+                  "# TYPE onsori_correction_lines_total counter",
+                  f'onsori_correction_lines_total {counters.get("correction_lines", 0):g}',
+                  "# TYPE onsori_correction_tokens_total counter",
+                  f'onsori_correction_tokens_total{{direction="input"}} {counters.get("correction_input_tokens", 0):g}',
+                  f'onsori_correction_tokens_total{{direction="output"}} {counters.get("correction_output_tokens", 0):g}']
         return "\n".join(lines) + "\n"
 
 
-def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTransport | None = None,
+               correction_client: Any = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        gateway = Gateway(settings or Settings.from_env(), transport)
+        gateway = Gateway(settings or Settings.from_env(), transport, correction_client)
         await gateway.start()
         app.state.gateway = gateway
         try:
@@ -637,7 +916,10 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
         # Public: lets the extension decide whether to offer cloud speech analysis.
         settings = request.app.state.gateway.settings
         return {"available": settings.enabled, "synthetic": settings.provider == "mock", "scope": "speech-only",
-                "install_daily_audio_minutes": settings.install_daily_audio_minutes}
+                "install_daily_audio_minutes": settings.install_daily_audio_minutes,
+                "corrections": settings.correction_enabled, "corrections_synthetic": settings.correction == "mock",
+                "correction_provider": settings.correction if settings.correction_enabled else None,
+                "correction_model": settings.correction_model_name if settings.correction_enabled else None}
 
     @app.post("/v1/installs")
     async def issue(request: Request):
@@ -687,6 +969,21 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
             raise
         except (ValueError, UnicodeError):
             raise HTTPException(400, "invalid_multipart") from None
+
+    @app.post("/v1/corrections")
+    async def correct(request: Request):
+        gateway, install = caller(request)  # Authenticate before reading the body.
+        length = request.headers.get("content-length", "")
+        if not length.isdigit() or int(length) > MAX_CORRECTION_BODY:
+            raise HTTPException(413, "correction_too_large")
+        body = await request.body()
+        if len(body) > MAX_CORRECTION_BODY:
+            raise HTTPException(413, "correction_too_large")
+        try:
+            value = json.loads(body)
+        except (ValueError, UnicodeError):
+            raise HTTPException(400, "invalid_json") from None
+        return await gateway.correct(value, install)
 
     @app.get("/v1/jobs/{job_id}")
     async def get_job(job_id: str, request: Request):

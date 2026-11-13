@@ -34,9 +34,10 @@ export function selectMusicTags(scores){
   return {instruments,genre:one(GENRES,.28,.08),mood:one(MOODS,.3,.1),vocal:one(VOCALS,.3,.08),rhythm:null,source:'AST/AudioSet (heuristic scores, not calibrated probabilities)'};
 }
 function describeMusic(tags){const parts=[];if(tags.mood)parts.push(`${tags.mood.text} 음악`);if(tags.instruments.length)parts.push(`${tags.instruments.map(x=>x.text).join('·')} 연주`);if(tags.genre)parts.push(`${tags.genre.text}풍`);if(tags.vocal)parts.push(`${tags.vocal.text} 함께 들림`);return soundNotation('music',parts.join(' · ')||'배경 음악이 이어짐');}
-export function assembleDocument({pcm,asr,windows=[],runtime=null,videoId=null,title='',startTime=0,options={}}){
+// A fixed reference (the whole video's median level) keeps caption sizes comparable across streamed minutes.
+export function assembleDocument({pcm,asr,windows=[],runtime=null,videoId=null,title='',startTime=0,options={},reference:fixedReference=null}){
   const device=runtime?.device==='webgpu'?'webgpu':'wasm',speechSource=runtime?.speech==='cloud'?'onsori-cloud-speech':`whisper-browser-${device}`;
-  const length=pcm.length/SR,reference=referenceLevel(pcm),cues=[],music_analysis={},rejectedSpeech=[],keptSpeech=[],retimedSpeech=[];let counter=0;
+  const length=pcm.length/SR,reference=Number.isFinite(fixedReference)?fixedReference:referenceLevel(pcm),cues=[],music_analysis={},rejectedSpeech=[],keptSpeech=[],retimedSpeech=[];let counter=0;
   function add(start,end,text,kind,extra={}){
     start=clamp(start,0,length);end=clamp(end,0,length);if(end-start<.02||!text?.trim())return;
     const cue={id:`browser-${++counter}`,start:round(start+startTime),end:round(end+startTime),text:text.trim().slice(0,2000),kind,...volumeStyle(pcm,start,end,reference),confidence:null,source:kind==='speech'?speechSource:`AST-browser-${device}`,review_required:true,volume_profile:volumeProfile(pcm,start,end,reference,startTime),...extra};cues.push(cue);return cue;

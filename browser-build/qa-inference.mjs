@@ -42,5 +42,5 @@ try{
   await fs.writeFile(evalAudio?path.resolve(arg('--out')):path.join(qa,long?'actual-inference-60.json':'actual-inference.json'),JSON.stringify(result,null,2));
   console.log('RESULT '+JSON.stringify({state:result.state,error:result.error,elapsed_ms:result.elapsed_ms,cues:result.result?.cues.map(c=>({text:c.text,kind:c.kind,start:c.start,end:c.end})),ocr:result.result?.metadata.screen_correction,remote_executables:result.remote_executable_requests.length}));
   const corrected=long||evalAudio||result.result?.cues.some(c=>c.text==='이것은 옷이오, 이불이오?'&&c.speech_correction?.reference_source==='youtube-screen-ocr');
-  if(result.state!=='done'||!corrected||result.remote_executable_requests.length||result.upload_requests.length||errors.length||result.permissions.permissions.includes('unlimitedStorage'))process.exitCode=1;
+  if(result.state!=='done'||!corrected||result.remote_executable_requests.length||result.upload_requests.length||errors.length)process.exitCode=1;
 }finally{await context.close();}

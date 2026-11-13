@@ -3,4 +3,6 @@ fastapi==0.162.0
 starlette==1.7.0
 uvicorn==0.54.0
 httpx==0.28.1
+# Caption typo correction: ONSORI_CORRECTION=deepinfra uses httpx above; =anthropic uses this SDK (brings httpx2).
+anthropic==1.17.0
 python-multipart==0.0.32

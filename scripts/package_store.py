@@ -17,8 +17,8 @@ ALLOWED = {'.js', '.mjs', '.html', '.css', '.png', '.ico', '.wasm', '.json', '.t
 def main():
     manifest = json.loads((EXTENSION / 'manifest.json').read_text('utf-8'))
     assert manifest['manifest_version'] == 3
-    assert manifest['version'] == '0.3.10'
-    assert set(manifest['permissions']) == {'storage', 'activeTab', 'tabCapture', 'offscreen'}
+    assert manifest['version'] == '0.4.0'
+    assert set(manifest['permissions']) == {'storage', 'unlimitedStorage', 'nativeMessaging', 'activeTab', 'tabCapture', 'offscreen'}
     assert len(manifest['description']) <= 132
     assert not any('127.0.0.1' in x or '<all_urls>' in x for x in manifest['host_permissions'])
     assert (EXTENSION / 'vendor').is_dir(), 'Run node scripts/build_browser.mjs first'
@@ -37,7 +37,8 @@ def main():
             assert 'http://127.0.0.1:8765' not in source, f'Local server dependency: {p.name}'
             assert not re.search(r'(?:eval\s*\(|new\s+Function\s*\()', source), p.name
     required = ['worker.js', 'offscreen.js', 'browser-engine.js', 'browser-inference-worker.js',
-                'help.html', 'privacy.html', 'icons/icon-128.png']
+                'help.html', 'privacy.html', 'ai-settings.html', 'ai-correction.js',
+                'vendor/anthropic/anthropic-sdk.mjs', 'icons/icon-128.png']
     assert all((EXTENSION / p).is_file() for p in required), 'Incomplete browser build'
     OUTPUT.mkdir(exist_ok=True)
     target = OUTPUT / f'OnSori-Chrome-WebStore-{manifest["version"]}.zip'

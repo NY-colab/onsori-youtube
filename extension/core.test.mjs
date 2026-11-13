@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {validateDocument,parseDocument,youtubeId,readyDocument,activeCues,captionSize,trimVolumeProfile,updateCaptionSizes,captionText,soundNotation,subtitleFile,normalizeSettings,DEFAULT_SETTINGS} from './core.js';
+import {validateDocument,parseDocument,youtubeId,readyDocument,captionKey,activeCues,captionSize,trimVolumeProfile,updateCaptionSizes,captionText,soundNotation,subtitleFile,normalizeSettings,DEFAULT_SETTINGS} from './core.js';
 const cue=(patch={})=>({id:'speech-1',start:0,end:4,text:'안녕하세요.',kind:'speech',dbfs:-20,relative_db:0,scale:1,confidence:.9,source:'test',review_required:true,...patch});
 const doc=(cues=[cue()],patch={})=>({schema_version:'1.0',video_id:'abcdefghijk',title:'검증 자막',duration:10,cues,warnings:[],metadata:{},...patch});
 test('normalizes and sorts without accepting invalid times or text',()=>{
@@ -145,6 +145,13 @@ test('playback only selects explicitly completed results, never legacy, pending 
   const partial={...entry,document:{...document,metadata:{partial:true,audio_analyzed:false}}};
   assert.equal(readyDocument(partial,{phase:'done'},id),null);
   assert.equal(readyDocument({...partial,origin:'import'},{},id),partial.document);
+  // Streamed whole-video minutes stay visible while later minutes run, and after an interruption.
+  const streamed={...entry,document:{...document,metadata:{partial:true,progressive:true,audio_analyzed:true,analysis_scope:'full-video'}}};
+  for(const phase of ['preparing','running','cancelled','error','done'])assert.equal(readyDocument(streamed,{videoId:id,phase},id),streamed.document);
+  assert.equal(readyDocument({...streamed,ready:false},{videoId:id,phase:'running'},id),null);
+  assert.equal(readyDocument({...streamed,origin:'import',document:{...streamed.document,metadata:{partial:true,progressive:true,audio_analyzed:true}}},{videoId:id,phase:'running'},id),null);
+  assert.equal(readyDocument({...streamed,document:{...streamed.document,metadata:{partial:true,progressive:true,audio_analyzed:false}}},{},id),null);
+  assert.equal(captionKey(id),'cc:'+id);
 });
 
 test('timing edits clip measured curves with interpolated boundary points',()=>{

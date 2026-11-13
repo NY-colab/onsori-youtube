@@ -50,6 +50,11 @@ export function validateDocument(input){
       if(reference_end<=reference_start||!Array.isArray(r.original_words)||r.original_words.length>1000)fail('대사 교정 기록이 올바르지 않습니다.');
       cue.speech_correction={original_text:string(r.original_text,'교정 전 대사',2000),original_source:string(r.original_source,'교정 전 출처',200),corrected_text:string(r.corrected_text,'교정 대사',2000),reference_source:r.reference_source,reference_video_id:video_id,reference_start,reference_end,similarity:number(r.similarity,'대사 일치도',0,1),word_timing_status:'cleared_after_source_correction',original_words:r.original_words.map(w=>{const start=number(w.start,'원본 단어 시작',0,86400),end=number(w.end,'원본 단어 종료',0,86400);if(end<=start)fail('원본 단어 시각이 올바르지 않습니다.');return {start,end,text:string(w.text,'원본 단어',500)};})};
     }
+    if(c.ai_correction!=null){
+      const r=c.ai_correction;
+      if(!r||typeof r!=='object'||Array.isArray(r)||typeof r.model!=='string'||!/^[A-Za-z0-9._\/-]{1,100}$/.test(r.model))fail('AI 보정 기록이 올바르지 않습니다.');
+      cue.ai_correction={original_text:string(r.original_text,'보정 전 대사',2000),model:r.model};
+    }
     if(c.words!=null){if(!Array.isArray(c.words)||c.words.length>1000) fail('단어 정보가 너무 많습니다.');cue.words=c.words.map(w=>{const ws=number(w.start,'단어 시작',Math.max(0,start-.05),Math.min(86400,end+.05)),we=number(w.end,'단어 종료',Math.max(0,start-.05),Math.min(86400,end+.05));if(we<=ws)fail('단어 시간 범위가 올바르지 않습니다.');return {start:ws,end:we,text:string(w.text,'단어',500)};});}
     return cue;
   }).sort((a,b)=>a.start-b.start||a.end-b.end);
@@ -83,10 +88,16 @@ export function captionSize(cue,settings=DEFAULT_SETTINGS){
   const scale=cue.scale??1;
   return Math.round(settings.baseSize*(1+(scale-1)*settings.effectStrength)*10)/10;
 }
+// Captions of one video are stored under their own key, so a save never rewrites other videos.
+export const captionKey=videoId=>`cc:${videoId}`;
 export function readyDocument(entry,operation={},videoId){
   if(!entry?.ready||entry.displayVersion!==2||entry.document?.video_id!==videoId)return null;
-  if(operation.videoId===videoId&&['requesting','preparing','capturing','uploading','queued','running'].includes(operation.phase))return null;
-  if(entry.origin!=='import'&&(entry.document.metadata?.partial===true||entry.document.metadata?.audio_analyzed===false))return null;
+  const meta=entry.document.metadata||{};
+  // Streaming whole-video analysis publishes every finished minute; those captions stay
+  // visible while later minutes are analyzed, after a reload and after an interruption.
+  const progressive=entry.origin==='analysis'&&meta.progressive===true&&meta.audio_analyzed===true;
+  if(!progressive&&operation.videoId===videoId&&['requesting','preparing','capturing','uploading','queued','running'].includes(operation.phase))return null;
+  if(entry.origin!=='import'&&!progressive&&(meta.partial===true||meta.audio_analyzed===false))return null;
   return entry.document;
 }
 // Sound notation (user-specified 가치봄 rule, 2026-11-05): effects ♪…♪, background music ♬…♬.

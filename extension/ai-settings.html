@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>온소리 자막 in YouTube · AI 자막 보정</title><link rel="stylesheet" href="help.css"><link rel="stylesheet" href="ai-settings.css"></head>
+<body><main class="ai-page">
+<header><a class="brand" href="help.html"><img src="icons/icon-128.png" width="44" height="44" alt=""><span>온소리<small>자막 in YouTube</small></span></a><a class="text-link" href="privacy.html">개인정보 안내</a></header>
+<section class="ai-intro"><h1>AI 자막 보정</h1><p>음성 인식이 만든 대사의 오타를 AI 언어 모델이 고칩니다.<br>따로 설정하지 않아도 이 PC에 Claude Code 연결 프로그램이 있으면 Claude Haiku로, 없으면 온소리 서버를 거쳐 DeepInfra의 공개 언어 모델로 자동 보정합니다.</p></section>
+<section class="ai-card" aria-labelledby="stateTitle">
+<div class="ai-card-head"><div><h2 id="stateTitle">보정 사용</h2><p id="keyState" class="ai-muted">설정을 확인하고 있습니다.</p></div><label class="ai-switch"><input id="enabled" type="checkbox" disabled aria-label="AI 자막 보정 사용"><span></span></label></div>
+<p class="ai-muted">모델 · <span id="model">확인 중</span></p>
+</section>
+<section class="ai-card" aria-labelledby="providerTitle"><h2 id="providerTitle">연결 방식</h2>
+<div class="ai-choices" role="radiogroup" aria-labelledby="providerTitle">
+<label class="ai-choice"><input type="radio" name="provider" id="providerCli" value="cli"><span><strong>이 PC의 Claude Code 로그인</strong><small>기본값입니다. API 키 없이, 이 PC에서 로그인한 Claude Code(claude.ai 구독)로 자동 보정합니다. 연결 프로그램을 PC에 한 번 설치합니다.</small></span></label>
+<label class="ai-choice"><input type="radio" name="provider" id="providerApi" value="api"><span><strong>Anthropic API 키</strong><small>Claude Platform에서 발급한 API 키로 보정합니다. 사용한 만큼 그 계정에 요금이 부과됩니다.</small></span></label>
+</div></section>
+<section id="cliCard" class="ai-card" hidden aria-labelledby="cliTitle"><h2 id="cliTitle">Claude Code 연결</h2>
+<p id="cliState" class="ai-muted">연결 확인을 누르면 이 PC의 Claude Code와 로그인 상태를 확인합니다.</p>
+<div class="ai-actions"><button id="cliCheck" class="ai-primary" type="button">연결 확인</button></div>
+<div id="cliInstall" class="ai-steps" hidden><p class="ai-muted"><strong>연결 프로그램 설치</strong></p><ol>
+<li>온소리 저장소 폴더의 <code>Install-Claude-Bridge.cmd</code>를 실행합니다(Node.js 필요).</li>
+<li>확장 ID를 물으면 아래 ID를 붙여 넣습니다.<div class="ai-id"><code id="extensionId">확인 중</code><button id="copyId" class="ai-secondary" type="button">복사</button></div></li>
+<li>설치를 마치면 <b>연결 확인</b>을 누릅니다.</li>
+</ol></div>
+<p class="ai-muted">로그인이 필요하다고 나오면 터미널에서 <code>claude auth login</code>을 실행해 다시 로그인합니다.<br>보정 요청은 Claude Code 사용량에 포함됩니다.</p>
+<p id="cliFeedback" class="ai-feedback" role="status"></p>
+</section>
+<form id="keyForm" class="ai-card" autocomplete="off" hidden>
+<h2><label for="apiKey">Anthropic API 키</label></h2>
+<p class="ai-muted">Claude Platform(Anthropic Console)의 API Keys 메뉴에서 발급한 키를 붙여 넣습니다.<br>계정을 바꿀 때는 새 계정의 키를 저장하면 기존 키를 대신합니다.</p>
+<input id="apiKey" type="password" inputmode="text" spellcheck="false" autocomplete="off" placeholder="sk-ant-…" aria-describedby="feedback">
+<div class="ai-actions"><button id="save" class="ai-primary" type="submit">저장하고 연결 확인</button><button id="remove" class="ai-secondary" type="button" hidden>키 삭제</button></div>
+<p id="feedback" class="ai-feedback" role="status"></p>
+</form>
+<section class="ai-card ai-notes"><h2>보내는 정보</h2><ul>
+<li>분석이 끝난 1분 구간마다 인식한 대사 글자, 영상 제목, 바로 앞 대사 몇 줄을 보정에 쓰는 AI 서비스로 보냅니다.</li>
+<li>영상의 소리와 화면은 보내지 않습니다.</li>
+<li>Claude Code 연결은 이 PC의 Claude Code가 그 로그인 계정으로 Anthropic에 보내며, 도구·훅·MCP·대화 기록 저장을 모두 끄고 실행합니다.</li>
+<li>Claude Code 연결이 없으면 온소리 서버(네이버 클라우드, 한국)를 거쳐 DeepInfra(미국)의 공개 언어 모델로 보냅니다.<br>서버는 이 설치의 무작위 열쇠로 요청을 받고 대사 글자를 저장하지 않습니다.<br>DeepInfra는 요청 내용을 디스크에 저장하거나 학습에 쓰지 않는다고 밝히고 있습니다.</li>
+<li>API 키는 이 Chrome의 확장 저장소에만 보관하며, 온소리 운영 서버로 보내지 않습니다.</li>
+<li>AI가 고친 대사는 원래 인식 결과와 함께 자막 JSON에 기록합니다.</li>
+<li>보정 요청이 실패하면 인식한 원문 그대로 자막을 표시합니다.</li>
+</ul><p class="ai-muted"><a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">API 키 발급 화면 열기</a> · <a href="https://www.anthropic.com/legal/privacy" target="_blank" rel="noopener noreferrer">Anthropic 개인정보 처리방침</a> · <a href="https://docs.deepinfra.com/account/data-privacy" target="_blank" rel="noopener noreferrer">DeepInfra 데이터 처리 방침</a></p></section>
+</main><script src="ai-settings.js" type="module"></script></body></html>

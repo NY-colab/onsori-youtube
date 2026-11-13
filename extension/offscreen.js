@@ -1,4 +1,5 @@
-import {analyzeRecording} from './browser-engine.js';
+import {analyzeRecording,analyzeFullStreaming} from './browser-engine.js';
+import {createCliClient} from './ai-correction.js';
 import {acquireAudio} from './direct-audio.js';
 import {captionUrl,boundedDownload,parseCaptionReferences,FULL_LIMITS} from './full-source.js';
 let current;
@@ -75,13 +76,22 @@ async function analyze(session){
     if(current!==session||session.discarded)return;
     const evidence=await send(session,{type:'CAPTURE_REFERENCES'});
     if(current!==session||session.discarded)return;
-    const document=await analyzeRecording({blob,videoId:session.meta.videoId,title:session.meta.title,startTime:session.meta.startTime,options:session.meta.options,references:evidence?.references||[],frames:session.meta.options?.capture_frames?evidence?.frames||[]:[],onProgress:report,signal:controller.signal});
+    const document=await analyzeRecording({blob,videoId:session.meta.videoId,title:session.meta.title,startTime:session.meta.startTime,options:session.meta.options,references:evidence?.references||[],frames:session.meta.options?.capture_frames?evidence?.frames||[]:[],correction:correctionConfig(session.meta.correction,session),onProgress:report,signal:controller.signal});
     if(current!==session||session.discarded||controller.signal.aborted)return;
     const result=await send(session,{type:'ANALYSIS_COMPLETE',document});
     if(result&&!result.ok)throw new Error(result.error||'완료된 자막을 저장하지 못했습니다.');
     session.completed=true;
   }catch(e){if(current===session&&!session.discarded)await fail(session,e.name==='AbortError'?'분석을 취소했습니다.':e.message||'이 기기에서 소리를 분석하지 못했습니다.');}
   finally{clearInterval(session.keepaliveTimer);session.controller=null;session.analyzing=false;}
+}
+// The Anthropic key reaches this document only for the analysis that uses it.
+// With the Claude Code CLI, requests go back through the worker to the local native bridge.
+function correctionConfig(value,session){
+  if(value?.enabled!==true)return null;const model=typeof value.model==='string'?value.model:undefined;
+  if(value.provider==='cli')return {enabled:true,provider:'cli',model,client:createCliClient(message=>send(session,message))};
+  // The OnSori server corrects with the operator's key; the worker adds this install's own key.
+  if(value.provider==='cloud')return {enabled:true,provider:'cloud',model,client:createCliClient(message=>send(session,message),'CLOUD_CORRECT')};
+  return typeof value.apiKey==='string'?{enabled:true,apiKey:value.apiKey,model}:null;
 }
 async function analyzeFull(message){
   discard(current);
@@ -104,9 +114,19 @@ async function analyzeFull(message){
     if(current!==session||signal.aborted)return;
     // Install keys live in the service worker; this document only asks for one while analyzing.
     const cloud=message.cloud?.enabled===true?{enabled:true,allowSynthetic:message.cloud.allowSynthetic===true,key:async renew=>(await send(session,{type:'CLOUD_KEY',renew}))?.key||null}:null;
-    const document=await analyzeRecording({blob,videoId:source.videoId,title:source.title,startTime:0,scope:'full-video',expectedDuration:source.duration,options:{...message.options,capture_frames:false},references,frames:[],cloud,onProgress:update=>report({...update,progress:.05+.95*update.progress}),signal});
+    const transport=source.transport||'page-direct';
+    // Minutes are analyzed from the playhead onward; each finished minute is saved and shown at once.
+    const position=async()=>{const state=await send(session,{type:'PLAYBACK_POSITION'});return Number.isFinite(state?.time)?state.time:null;};
+    const document=await analyzeFullStreaming({blob,videoId:source.videoId,title:source.title,expectedDuration:source.duration,options:{...message.options,capture_frames:false},references,cloud,correction:correctionConfig(message.correction,session),resume:message.resume||null,position,signal,
+      onProgress:update=>report({...update,progress:.05+.95*update.progress}),
+      onChunk:async(doc,{remaining})=>{
+        if(!remaining||current!==session||signal.aborted)return;
+        doc.metadata.audio_transport=transport;
+        const saved=await send(session,{type:'ANALYSIS_CHUNK',document:doc});
+        if(saved&&!saved.ok)throw new Error(saved.error||'분석한 구간을 저장하지 못했습니다.');
+      }});
     if(current!==session||signal.aborted)return;
-    document.metadata.audio_transport=source.transport||'page-direct';
+    document.metadata.audio_transport=transport;
     const result=await send(session,{type:'ANALYSIS_COMPLETE',document});if(!result?.ok)throw new Error(result?.error||'전체 자막을 저장하지 못했습니다.');session.completed=true;
   }catch(e){if(current===session&&!session.discarded)await fail(session,e.message||'전체 분석을 완료하지 못했습니다. 다른 방법에서 탭 녹음을 선택해 주세요.');}
   finally{clearInterval(session.keepaliveTimer);session.analyzing=false;session.controller=null;}

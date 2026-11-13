@@ -2,6 +2,7 @@
 from pathlib import Path
 import argparse
 import os
+import re
 import secrets
 import shutil
 import sys
@@ -37,6 +38,20 @@ def check(values, metrics):
         errors.append("ONSORI_ALLOW_PAID must be true or false")
     if provider == "deepinfra" and (paid != "true" or not values.get("DEEPINFRA_API_KEY")):
         errors.append("DeepInfra requires explicit paid enablement and an operator-provided API key")
+    correction = values.get("ONSORI_CORRECTION", "disabled")
+    if correction not in {"disabled", "mock", "anthropic", "deepinfra"}:
+        errors.append("Unsupported ONSORI_CORRECTION")
+    if correction == "anthropic" and not values.get("ANTHROPIC_API_KEY", "").startswith("sk-ant-"):
+        errors.append("Caption correction requires an operator-provided ANTHROPIC_API_KEY")
+    if correction == "deepinfra":
+        key = values.get("DEEPINFRA_API_KEY", "")
+        if not 16 <= len(key) <= 512 or any(not 33 <= ord(c) <= 126 for c in key):
+            errors.append("Caption correction requires an operator-provided DEEPINFRA_API_KEY")
+        model = values.get("ONSORI_CORRECTION_MODEL", "")
+        if model and not re.fullmatch(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}", model):
+            errors.append("ONSORI_CORRECTION_MODEL must be a DeepInfra model id such as owner/name")
+        if values.get("ONSORI_CORRECTION_REASONING", "none") not in {"none", "minimal", "low", "medium", "high", "default"}:
+            errors.append("Unsupported ONSORI_CORRECTION_REASONING")
     return errors
 
 def main():
