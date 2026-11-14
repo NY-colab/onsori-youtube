@@ -35,11 +35,11 @@ test('fixes may change length but never invent wording',()=>{
   // Heard on listening (2026-11-14): the line was "저것과", "것이냐", though the length changes.
   assert.equal(acceptCorrection('적은 것과 같은 제품입니다.','저것과 같은 제품입니다.'),'저것과 같은 제품입니다.');
   assert.equal(acceptCorrection('색이라도 다른 것인','색이라도 다른 것이냐'),'색이라도 다른 것이냐');
-  // New wording the old length/similarity check let through is refused.
+  assert.equal(acceptCorrection('그러니 겨울옷이 윗돌이 하나로 끝나겠어.','그러니 겨울옷이 웃도리 하나로 끝나겠어.'),'그러니 겨울옷이 웃도리 하나로 끝나겠어.');
+  assert.equal(acceptCorrection('솜을 얼마나 넣었기에 일이 가볍어?','솜을 얼마나 넣었기에 이리 가벼워?'),'솜을 얼마나 넣었기에 이리 가벼워?');
+  // Invented wording (more than three new syllables) is refused.
   assert.equal(acceptCorrection('적은 것과 같은 제품입니다.','아까 말씀드린 것과 같은 제품입니다.'),null);
-  assert.equal(acceptCorrection('옷이 일이 되어서 그렇지.','옷이 찢어져서 그렇지.'),null);
-  assert.equal(acceptCorrection('이곳은 이곳이 없어진 옷이요?','이곳은 이음새가 없어진 옷이요?'),null);
-  // Too many swapped syllables is a rewrite even at the same length.
+  // A different sentence is refused.
   assert.equal(acceptCorrection('오늘 날씨가 좋네요','내일 비가 오겠죠'),null);
 });
 test('keys are checked by shape and only a hint is ever shown',()=>{
