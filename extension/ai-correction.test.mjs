@@ -20,6 +20,28 @@ test('accepts typo and spacing fixes, rejects rewrites, additions and sound mark
   assert.equal(acceptCorrection('네 알겠습니다','♪ 네 알겠습니다 ♪'),null);
   assert.equal(acceptCorrection('네 알겠습니다',''),null);
 });
+test('fixes may change length but never invent wording',()=>{
+  // Fixes the evaluation video needed (2026-11-14) still pass.
+  assert.equal(acceptCorrection('솜 대신 고운 오리둘이 들어있어요','솜 대신 고운 오리털이 들어있어요'),'솜 대신 고운 오리털이 들어있어요');
+  assert.equal(acceptCorrection('몸은 한결 나운데 팔은 여전히 시루구먼.','몸은 한결 나은데 팔은 여전히 시리구먼.'),'몸은 한결 나은데 팔은 여전히 시리구먼.');
+  assert.equal(acceptCorrection('소목과는 다르게 다뤄야겠구려.','솜옷과는 다르게 다뤄야겠구려.'),'솜옷과는 다르게 다뤄야겠구려.');
+  assert.equal(acceptCorrection('색이라도 다른 것인','색이라도 다른 것은?'),'색이라도 다른 것은?');
+  assert.equal(acceptCorrection('일이 가볍소?','이리 가볍소?'),'이리 가볍소?');
+  assert.equal(acceptCorrection('옷이 일이 되어서 그렇지.','옷이 이리 되어서 그렇지.'),'옷이 이리 되어서 그렇지.');
+  assert.equal(acceptCorrection('잠깐 내게 줘보시오','잠깐 내게 줘 보시오'),'잠깐 내게 줘 보시오');
+  // YouTube auto captions drop or add syllables; filling or removing them is fine.
+  assert.equal(acceptCorrection('수 방법도 제대로 알아봐야겠네요.','수선 방법도 제대로 알아봐야겠네요.'),'수선 방법도 제대로 알아봐야겠네요.');
+  assert.equal(acceptCorrection('솜 대신 고운 오리둘이 들어 있어요.이','솜 대신 고운 오리털이 들어 있어요.'),'솜 대신 고운 오리털이 들어 있어요.');
+  // Rewrites the old length/similarity check let through are refused.
+  assert.equal(acceptCorrection('적은 것과 같은 제품입니다.','아까 말씀드린 것과 같은 제품입니다.'),null);
+  assert.equal(acceptCorrection('적은 것과 같은 제품입니다.','저것과 같은 제품입니다.'),null);
+  assert.equal(acceptCorrection('색이라도 다른 것인','색이라도 다른 것이냐'),null);
+  assert.equal(acceptCorrection('앞으로 수손이 필요한 손님도 봐주실 수 있을까요?','앞으로 수선 필요한 손님도 봐주실 수 있을까요?'),null);
+  assert.equal(acceptCorrection('그러니 겨울옷이 윗돌이 하나로 끝나겠어.','그러니 겨울옷이 윗도리가 하나로 끝나겠어.'),null);
+  assert.equal(acceptCorrection('이 시각 세계였습니다.','이 시대의 세계였습니다.'),null);
+  // Too many swapped syllables is a rewrite even at the same length.
+  assert.equal(acceptCorrection('오늘 날씨가 좋네요','내일 비가 오겠죠'),null);
+});
 test('keys are checked by shape and only a hint is ever shown',()=>{
   assert.ok(API_KEY_PATTERN.test(KEY));assert.equal(API_KEY_PATTERN.test('sk-proj-abc'),false);assert.equal(API_KEY_PATTERN.test(KEY+' '),false);
   assert.equal(apiKeyHint(KEY),'sk-ant-api…kkkk');assert.equal(apiKeyHint('nope'),'');

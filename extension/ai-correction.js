@@ -2,7 +2,7 @@
 // key or the Claude Code CLI signed in on this PC, or the model the OnSori server names (DeepInfra).
 // Only recognized caption TEXT leaves the device; audio never does.
 // The SDK is bundled in vendor/anthropic (no remote code) and loaded only when used.
-import {normalized,similarity} from './browser-engine-signal.js';
+import {matchingBlocks,normalized,similarity} from './browser-engine-signal.js';
 import {AI_CORRECTION,API_KEY_PATTERN,CORRECTION_SYSTEM,CORRECTION_SCHEMA,MODEL_ID_PATTERN,correctionPayload,correctionSourceTag} from './ai-config.js';
 export {AI_CORRECTION,API_KEY_PATTERN,apiKeyHint} from './ai-config.js';
 
@@ -48,13 +48,29 @@ export function correctionTargets(doc){
   return doc.cues.filter(c=>c.kind==='speech'&&!c.speech_correction&&!c.ai_correction&&/whisper|onsori-cloud-speech/.test(c.source||''));
 }
 
-// Guard against rewrites: only a close variant of the recognized line is accepted.
+// Syllables touched by the fix, or -1 when a changed stretch says something else. Only runs of two or
+// more equal syllables anchor the lines: a lone shared syllable (일이 -> 이리) would misalign them.
+// A stretch may swap syllables one for one (오리둘 -> 오리털), or add or drop up to two syllables while
+// the rest of it stays as heard (수 -> 수선, 있어요이 -> 있어요). Anything else is new wording:
+// 2026-11-14 a model turned "적은 것과" into "아까 말씀드린 것과".
+function changedSyllables(a,b){
+  let i=0,j=0,changed=0;
+  for(const [ai,bi,size] of [...matchingBlocks(a,b).filter(x=>x[2]>=2),[a.length,b.length,0]]){
+    const p=a.slice(i,ai),q=b.slice(j,bi);
+    if(p.length!==q.length&&!(Math.abs(p.length-q.length)<=2&&(p.length<q.length?q.includes(p):p.includes(q))))return -1;
+    changed+=Math.max(p.length,q.length);i=ai+size;j=bi+size;
+  }
+  return changed;
+}
+// Guard against rewrites: only a close variant of the recognized line is accepted. The aim is the
+// words that were said; a fix may change length, spacing and punctuation but not invent wording.
 export function acceptCorrection(original,candidate){
   const before=String(original??'').trim(),text=String(candidate??'').replace(/\s+/g,' ').trim();
   if(!text||text.length>2000||text===before||/[♪♬\[\]<>]/.test(text))return null;
   const a=normalized(before),b=normalized(text);if(!a.length||!b.length)return null;
   if(a===b)return text;
-  if(Math.abs(b.length-a.length)>Math.max(3,a.length*.4))return null;
+  const changed=changedSyllables(a,b);
+  if(changed<0||changed>Math.max(2,Math.ceil(a.length*.3)))return null;
   const letters=similarity(a,b),jamo=similarity(a.normalize('NFD'),b.normalize('NFD'));
   return jamo>=.6||letters>=.5?text:null;
 }
