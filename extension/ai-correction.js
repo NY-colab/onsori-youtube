@@ -48,17 +48,16 @@ export function correctionTargets(doc){
   return doc.cues.filter(c=>c.kind==='speech'&&!c.speech_correction&&!c.ai_correction&&/whisper|onsori-cloud-speech/.test(c.source||''));
 }
 
-// Syllables touched by the fix, or -1 when a changed stretch says something else. Only runs of two or
-// more equal syllables anchor the lines: a lone shared syllable (일이 -> 이리) would misalign them.
-// A stretch may swap syllables one for one (오리둘 -> 오리털), or add or drop up to two syllables while
-// the rest of it stays as heard (수 -> 수선, 있어요이 -> 있어요). Anything else is new wording:
-// 2026-11-14 a model turned "적은 것과" into "아까 말씀드린 것과".
+// Syllables touched by the fix, or -1 when a changed stretch is new wording. Only runs of two or more
+// equal syllables anchor the lines: a lone shared syllable (일이 -> 이리) would misalign them.
+// Each changed stretch spans at most two syllables on either side, so a misheard word can be fixed
+// even when its length changes (적은 것과 -> 저것과, 것인 -> 것이냐, 수 -> 수선, both heard so on
+// 2026-11-14), but a phrase cannot be invented (적은 것과 -> 아까 말씀드린 것과).
 function changedSyllables(a,b){
   let i=0,j=0,changed=0;
   for(const [ai,bi,size] of [...matchingBlocks(a,b).filter(x=>x[2]>=2),[a.length,b.length,0]]){
-    const p=a.slice(i,ai),q=b.slice(j,bi);
-    if(p.length!==q.length&&!(Math.abs(p.length-q.length)<=2&&(p.length<q.length?q.includes(p):p.includes(q))))return -1;
-    changed+=Math.max(p.length,q.length);i=ai+size;j=bi+size;
+    const touched=Math.max(ai-i,bi-j);if(touched>2)return -1;
+    changed+=touched;i=ai+size;j=bi+size;
   }
   return changed;
 }
@@ -70,7 +69,7 @@ export function acceptCorrection(original,candidate){
   const a=normalized(before),b=normalized(text);if(!a.length||!b.length)return null;
   if(a===b)return text;
   const changed=changedSyllables(a,b);
-  if(changed<0||changed>Math.max(2,Math.ceil(a.length*.3)))return null;
+  if(changed<0||changed>Math.max(3,Math.ceil(a.length*.35)))return null;
   const letters=similarity(a,b),jamo=similarity(a.normalize('NFD'),b.normalize('NFD'));
   return jamo>=.6||letters>=.5?text:null;
 }
