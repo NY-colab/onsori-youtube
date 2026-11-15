@@ -2,6 +2,7 @@ import {validateDocument,trimVolumeProfile,clockTime} from './core.js';
 import {MODEL_CONFIG} from './model-config.js';
 import {assembleDocument,applyReferences,stableOcrReferences,selectOcrFrames,referenceLevel,dbfs,normalized,similarity} from './browser-engine-signal.js';
 import {transcribeInCloud} from './cloud-speech.js';
+import {describeSoundsInCloud,SOUND_STOP_CODES} from './cloud-sounds.js';
 import {correctDocumentSpeech,mergeCorrectionRecords,FATAL_CORRECTION_CODES,AI_CORRECTION} from './ai-correction.js';
 
 const abortError=()=>new DOMException('분석을 취소했습니다.','AbortError');
@@ -155,7 +156,7 @@ export async function analyzeRecording({blob,videoId=null,title='브라우저 �
   const full=scope==='full-video';
   const pcm=await decode(blob,signal,full?MODEL_CONFIG.maxFullSeconds:MODEL_CONFIG.maxSeconds);
   if(full&&(!Number.isFinite(expectedDuration)||Math.abs(pcm.length/16000-expectedDuration)>Math.max(2,expectedDuration*.01)))throw new Error('전체 오디오의 길이가 영상과 맞지 않아 결과를 적용하지 않았습니다.');
-  const result=full&&cloud?.enabled===true?await withCloudSpeech(pcm,{videoId,title,options,cloud,onProgress,signal}):await infer(pcm,options,onProgress,signal);check(signal);
+  const result=full&&cloud?.enabled===true&&cloud.speech!==false?await withCloudSpeech(pcm,{videoId,title,options,cloud,onProgress,signal}):await infer(pcm,options,onProgress,signal);check(signal);
   const doc=assembleDocument({pcm,asr:result.asr,windows:result.windows,runtime:result.runtime,videoId,title,startTime,options});
   doc.metadata.analysis_scope=full?'full-video':'clip';
   if(result.runtime?.speech==='cloud')doc.warnings.push('대사는 온소리 클라우드(외부 AI 업체 DeepInfra)에서 인식했고, 음악·효과음은 이 기기에서 분석했습니다.');
@@ -254,23 +255,32 @@ function streamMetadata(meta={}){
   const {asr_diagnostics,speech_filter,speech_timing,asr_tag_filter,analysis_range,screen_correction,music_analysis,speech_reference,ai_correction,analyzed_ranges,stream_chunks,partial,...kept}=meta;
   return kept;
 }
-function compatibleBase(base,videoId,duration,language){
+function compatibleBase(base,videoId,duration,language,speechSource='recognition'){
   const meta=base?.metadata;
-  if(!base||base.video_id!==videoId||meta?.progressive!==true||meta.audio_analyzed!==true||(meta.speech_language||'ko')!==language||Math.abs(base.duration-duration)>Math.max(2,duration*.01))return null;
+  if(!base||base.video_id!==videoId||meta?.progressive!==true||meta.audio_analyzed!==true||(meta.speech_language||'ko')!==language||(meta.speech_source||'recognition')!==speechSource||Math.abs(base.duration-duration)>Math.max(2,duration*.01))return null;
   return base;
 }
-export async function analyzeFullStreaming({blob,videoId,title='',expectedDuration,options={},references=[],cloud=null,correction=null,resume=null,position=null,onChunk,onProgress,signal}={}){
+export async function analyzeFullStreaming({blob,videoId,title='',expectedDuration,options={},references=[],captions=null,notices=[],cloud=null,correction=null,resume=null,position=null,onChunk,onProgress,signal}={}){
   check(signal);
   onProgress?.({progress:0,message:'브라우저에서 전체 오디오 읽는 중'});
   const pcm=await decode(blob,signal,MODEL_CONFIG.maxFullSeconds);
   if(!Number.isFinite(expectedDuration)||Math.abs(pcm.length/SR-expectedDuration)>Math.max(2,expectedDuration*.01))throw new Error('전체 오디오의 길이가 영상과 맞지 않아 결과를 적용하지 않았습니다.');
-  const duration=round3(pcm.length/SR),language=options.language||'ko',reference=referenceLevel(pcm),base=compatibleBase(resume,videoId,duration,language);
+  const duration=round3(pcm.length/SR),language=options.language||'ko',reference=referenceLevel(pcm);
+  // With YouTube caption lines the text is known for the whole video: only sound (music, effects,
+  // loudness for caption size) is analyzed here and speech recognition is skipped.
+  const captionLines=Array.isArray(captions?.lines)?captions.lines.filter(l=>Number.isFinite(l.start)&&Number.isFinite(l.end)&&l.end>l.start&&l.start<duration&&typeof l.text==='string'&&l.text.trim()):[];
+  const speechSource=captionLines.length?(captions.kind==='auto'?'youtube-auto-caption':'youtube-caption-track'):'recognition';
+  const base=compatibleBase(resume,videoId,duration,language,speechSource);
   let cues=(base?.cues||[]).filter(c=>c.end<=duration+.05),covered=base?coveredRanges(base.metadata.analyzed_ranges,duration):[];
   let meta=base?streamMetadata(base.metadata):null,speechReference=base?.metadata.speech_reference||null,aiRecord=base?.metadata.ai_correction||null;
   const music={...(base?.metadata.music_analysis||{})},warnings=[...(base?.warnings||[])],chunkLog=[...(base?.metadata.stream_chunks||[])].slice(-200),warn=text=>{if(!warnings.includes(text))warnings.push(text);};
+  for(const text of Array.isArray(notices)?notices.slice(0,5):[])if(typeof text==='string'&&text)warn(text.slice(0,300));
   const pending=planChunks(pcm,duration,covered);
-  let cloudOn=cloud?.enabled===true,correctionOn=correction?.enabled===true;
-  const documentNow=complete=>validateDocument({schema_version:'1.0',video_id:videoId,title:String(title||'').slice(0,300),duration,cues,warnings:warnings.slice(0,100),metadata:{...(meta||{}),engine:meta?.engine||'browser',audio_analyzed:true,partial:!complete,progressive:true,analysis_scope:'full-video',analysis_range:[0,duration],analyzed_ranges:covered,reference_dbfs:reference,speech_language:language,stream_chunk_seconds:STREAM.seconds,stream_chunks:chunkLog,music_analysis:music,...(speechReference?{speech_reference:speechReference}:{}),...(aiRecord?{ai_correction:aiRecord}:{})}});
+  let cloudOn=cloud?.enabled===true&&cloud.speech!==false&&!captionLines.length,correctionOn=correction?.enabled===true;
+  // Music and effect names from Gemini 4 Hydrogen through the server (consented); once its budget or
+  // the daily share is used up, the remaining minutes keep the on-device AST result.
+  let soundsOn=cloud?.enabled===true&&cloud.sounds===true&&options.event_detection!==false;
+  const documentNow=complete=>validateDocument({schema_version:'1.0',video_id:videoId,title:String(title||'').slice(0,300),duration,cues,warnings:warnings.slice(0,100),metadata:{...(meta||{}),engine:meta?.engine||'browser',audio_analyzed:true,partial:!complete,progressive:true,analysis_scope:'full-video',analysis_range:[0,duration],analyzed_ranges:covered,reference_dbfs:reference,speech_language:language,speech_source:speechSource,stream_chunk_seconds:STREAM.seconds,stream_chunks:chunkLog,music_analysis:music,...(speechReference?{speech_reference:speechReference}:{}),...(aiRecord?{ai_correction:aiRecord}:{})}});
   const session=createInferenceSession(),run=(p,o,cb,s,extra={})=>session.run(p,o,cb,s,{...extra,keep:true});
   try{
     while(pending.length){
@@ -281,17 +291,32 @@ export async function analyzeFullStreaming({blob,videoId,title='',expectedDurati
       const ready=done?`자막 준비 ${clockTime(done)}/${clockTime(duration)} · `:'';
       const report=(fraction,message)=>onProgress?.({progress:Math.min(.999,(done+length*clamp(fraction,0,1))/duration),message:`${ready}${label} 구간 · ${message}`});
       const fromModel=update=>report(Number.isFinite(update.progress)?(update.progress-.05)/.7:0,update.message||'분석 중');
-      const from=Math.max(0,chunk.start-STREAM.pad),to=Math.min(duration,chunk.end+STREAM.pad),slice=pcm.subarray(Math.round(from*SR),Math.round(to*SR));
+      // A caption line belongs to the minute holding its midpoint; the slice is widened so the
+      // whole line is measured.
+      const last=chunk.end>=duration-.01,owned=captionLines.filter(l=>{const mid=(l.start+l.end)/2;return mid>=chunk.start&&(mid<chunk.end||last);});
+      const from=Math.max(0,Math.min(chunk.start-STREAM.pad,...owned.map(l=>l.start))),to=Math.min(duration,Math.max(chunk.end+STREAM.pad,...owned.map(l=>l.end))),slice=pcm.subarray(Math.round(from*SR),Math.round(to*SR));
       report(0,'소리 분석 시작');
+      const soundTask=soundsOn?describeSoundsInCloud(pcm,{from:chunk.start,to:chunk.end,cloud,signal}).then(value=>({value}),error=>({error})):null;
       let result;
       if(cloudOn){
         result=await withCloudSpeech(slice,{videoId,title,options,cloud,onProgress:fromModel,signal,run});
         if(result.runtime?.cloud_fallback){cloudOn=false;warn(`${result.runtime.cloud_fallback} 이후 구간의 대사는 이 기기에서 분석했습니다.`);}
         else warn('대사는 온소리 클라우드(외부 AI 업체 DeepInfra)에서 인식했고, 음악·효과음은 이 기기에서 분석했습니다.');
+      }else if(captionLines.length){
+        result=await run(slice,options,fromModel,signal,{asr:false});
+        warn(captions.kind==='auto'?'대사는 YouTube 자동 자막을 가져왔고, 음악·효과음과 글자 크기는 이 기기에서 분석했습니다.':'대사는 영상에 등록된 자막을 가져왔고, 음악·효과음과 글자 크기는 이 기기에서 분석했습니다.');
       }else result=await run(slice,options,fromModel,signal);
       check(signal);
-      const part=ownChunk(assembleDocument({pcm:slice,asr:result.asr,windows:result.windows,runtime:result.runtime,videoId,title,startTime:from,options,reference}),chunk,duration);
-      if(options.use_caption_references!==false){applyReferences(part,references,'native');const r=part.metadata.speech_reference;speechReference={method:r.method,available:r.available,corrected:(speechReference?.corrected||0)+r.corrected};}
+      let cloudSounds=null;
+      if(soundTask){
+        const answer=await soundTask;check(signal);
+        if(answer.value){cloudSounds=answer.value.events;warn('음악 설명과 효과음 이름은 온소리 서버를 거쳐 Google Gemini 4 Hydrogen이 붙였습니다.');}
+        else if(answer.error?.name==='AbortError')throw answer.error;
+        else if(SOUND_STOP_CODES.includes(answer.error?.code)){soundsOn=false;warn(`${answer.error.message} 이후 구간의 음악·효과음은 이 기기에서 분석했습니다.`);}
+        else warn(`${label} 구간의 음악·효과음은 서버 분석을 받지 못해 이 기기에서 분석했습니다.`);
+      }
+      const part=ownChunk(assembleDocument({pcm:slice,asr:captionLines.length?null:result.asr,windows:result.windows,runtime:result.runtime,videoId,title,startTime:from,options,reference,captions:captionLines.length?{kind:captions.kind,lines:owned}:null,cloudSounds}),chunk,duration);
+      if(options.use_caption_references!==false&&!captionLines.length){applyReferences(part,references,'native');const r=part.metadata.speech_reference;speechReference={method:r.method,available:r.available,corrected:(speechReference?.corrected||0)+r.corrected};}
       if(correctionOn){
         const context=cues.filter(c=>c.kind==='speech'&&c.start<chunk.start).slice(-AI_CORRECTION.contextLines).map(c=>c.text);
         const error=await correctSpeech(part,correction,{context,signal,onProgress:message=>report(.97,message)});
@@ -303,7 +328,7 @@ export async function analyzeFullStreaming({blob,videoId,title='',expectedDurati
       const merged=mergeStreamCues(cues,part,chunk,reference);cues=merged.cues;Object.assign(music,merged.music);
       for(const id of Object.keys(music))if(!cues.some(c=>c.id===id))delete music[id];
       covered=coveredRanges([...covered,[chunk.start,chunk.end]],duration);
-      chunkLog.push({start:chunk.start,end:chunk.end,device:result.runtime?.device||null,speech:result.runtime?.speech==='cloud'?'cloud':'device',...(result.runtime?.gpu_fallback?{gpu_fallback:String(result.runtime.gpu_fallback).slice(0,120)}:{})});
+      chunkLog.push({start:chunk.start,end:chunk.end,device:result.runtime?.device||null,speech:captionLines.length?speechSource:result.runtime?.speech==='cloud'?'cloud':'device',sounds:cloudSounds?'gemini':'device',...(result.runtime?.gpu_fallback?{gpu_fallback:String(result.runtime.gpu_fallback).slice(0,120)}:{})});
       const doc=documentNow(!pending.length);
       check(signal);await onChunk?.(doc,{chunk,remaining:pending.length});
       if(!pending.length){onProgress?.({progress:1,message:'영상 전체 자막 분석 완료'});return doc;}

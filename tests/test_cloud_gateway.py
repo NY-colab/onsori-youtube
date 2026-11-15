@@ -308,7 +308,9 @@ def test_public_availability_reports_only_what_the_extension_needs(settings):
         assert client.get("/v1/availability").json() == {"available": True, "synthetic": True, "scope": "speech-only",
                                                          "install_daily_audio_minutes": 20, "corrections": False,
                                                          "corrections_synthetic": False, "correction_provider": None,
-                                                         "correction_model": None}
+                                                         "correction_model": None, "sounds": False,
+                                                         "sounds_synthetic": False, "sound_model": None,
+                                                         "install_daily_sound_minutes": 60}
     with TestClient(module.create_app(replace(settings, provider="disabled"))) as client:
         assert client.get("/v1/availability").json()["available"] is False
 

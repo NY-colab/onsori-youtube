@@ -28,3 +28,26 @@ test('transcript references preserve video identity and reject malformed or exce
   const refs=parseCaptionReferences({events:[{tStartMs:1000,dDurationMs:2000,segs:[{utf8:'이것은 옷이오'}]},{tStartMs:4000,dDurationMs:200000,segs:[{utf8:'잘못된 범위입니다'}]},{tStartMs:-10,dDurationMs:1000,segs:[{utf8:'잘못된 시작입니다'}]}]},id,361);
   assert.deepEqual(refs,[{video_id:id,start:1,end:3,text:'이것은 옷이오',source:'youtube-native-caption'}]);
 });
+test('player caption request (with pot) becomes the track; json3 words become caption lines',async()=>{
+  const {captionWords,captionLines}=await import('./full-source.js');
+  const id='abcdefghijk',base={videoId:id,title:'t',duration:100,formats:[{url:'https://r1.googlevideo.com/videoplayback?id=1',mimeType:'audio/mp4'}],tracks:[{url:`https://www.youtube.com/api/timedtext?v=${id}&lang=ko&kind=asr`,language:'ko',kind:'asr'}]};
+  const attested=`https://www.youtube.com/api/timedtext?v=${id}&lang=ko&kind=asr&pot=abc&fmt=json3`;
+  assert.equal(selectFullSource({...base,captionRequest:{url:attested,language:'ko',kind:'asr'}},id).track.attested,true);
+  assert.ok(!selectFullSource({...base,captionRequest:{url:attested.replace('&pot=abc',''),language:'ko',kind:'asr'}},id).track.attested,'no pot, no attested text');
+  assert.ok(!selectFullSource({...base,captionRequest:{url:attested,language:'en',kind:'asr'}},id).track.attested,'other language');
+  assert.ok(!selectFullSource({...base,captionRequest:{url:attested.replace(id,'zzzzzzzzzzz'),language:'ko',kind:'asr'}},id).track.attested,'other video');
+  const json={events:[
+    {tStartMs:1000,dDurationMs:4000,segs:[{utf8:'이것은'},{utf8:' 옷이요?',tOffsetMs:600}]},
+    {tStartMs:2000,dDurationMs:3000,segs:[{utf8:'\n'}]},
+    {tStartMs:3000,dDurationMs:2000,segs:[{utf8:'>> 입는'},{utf8:' 옷이에요.',tOffsetMs:400}]},
+    {tStartMs:6000,dDurationMs:2000,segs:[{utf8:'[음악]'}]},
+    {tStartMs:9000,dDurationMs:2000,segs:[{utf8:'Ja.'},{utf8:' 한번',tOffsetMs:200},{utf8:' 걸쳐',tOffsetMs:500}]},
+  ]};
+  const {words,tags}=captionWords(json,100);
+  assert.deepEqual(tags.map(t=>[t.start,t.text]),[[6,'[음악]']]);
+  assert.deepEqual(words.map(w=>w.text),['이것은','옷이요?','입는','옷이에요.','한번','걸쳐']);
+  const lines=captionLines(words);
+  assert.deepEqual(lines.map(l=>l.text),['이것은 옷이요?','입는 옷이에요.','한번 걸쳐']);
+  assert.equal(lines[0].start,1);assert.equal(lines[0].end,3,'a line ends where the next word starts');
+  assert.ok(lines.every(l=>l.end>l.start));
+});

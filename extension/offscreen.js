@@ -1,7 +1,7 @@
 import {analyzeRecording,analyzeFullStreaming} from './browser-engine.js';
 import {createCliClient} from './ai-correction.js';
 import {acquireAudio} from './direct-audio.js';
-import {captionUrl,boundedDownload,parseCaptionReferences,FULL_LIMITS} from './full-source.js';
+import {captionUrl,boundedDownload,parseCaptionReferences,captionWords,captionLines,FULL_LIMITS} from './full-source.js';
 let current;
 async function send(session,message){if(current!==session||session.discarded)return null;try{return await chrome.runtime.sendMessage({...message,captureId:session.captureId});}catch{return null;}}
 function cleanup(session){
@@ -106,18 +106,30 @@ async function analyzeFull(message){
       lookup:async()=>{const result=await send(session,{type:'FULL_AUDIO_LOOKUP',language:message.options?.language});if(!result?.ok||!result.source)throw new Error(result?.error||'오디오 주소 조회가 끝났습니다. 다시 분석해 주세요.');return result.source;},
       onLookup:()=>report({progress:0,message:'YouTube에 전체 오디오를 직접 요청합니다. 재생하거나 녹음하지 않습니다.'}),
       onProgress:(bytes,total)=>report({progress:total ? .05*bytes/total : 0,message:`전체 오디오 받는 중 · ${(bytes/1048576).toFixed(1)} MB${total?' / '+(total/1048576).toFixed(1)+' MB':''}`})});
-    source=acquired.source;const blob=acquired.blob;
-    let references=[];
+    // An audio lookup answers with another player response whose caption address has no pot;
+    // only the audio comes from it, the page's own caption request is kept.
+    const requested=source;source=acquired.source;const blob=acquired.blob;
+    if(source!==requested)source={...source,...(requested.track?.attested?{track:requested.track}:{}),...(requested.captionStatus?{captionStatus:requested.captionStatus}:{})};
+    let references=[],captions=null,captionError=null;
     if(message.options?.use_caption_references!==false&&captionUrl(source.track?.url,source.videoId)){
-      try{const data=await boundedDownload(source.track.url,{signal,maxBytes:2*1024*1024});references=parseCaptionReferences(JSON.parse(await data.text()),source.videoId,source.duration);}catch(e){if(signal.aborted)throw e;}
+      try{
+        const data=await boundedDownload(source.track.url,{signal,maxBytes:2*1024*1024}),json=JSON.parse(await data.text());
+        // The player's own caption request (attested) gives the whole text up front: its lines
+        // become the speech captions and Whisper is skipped. Otherwise captions only correct Whisper.
+        if(source.track.attested){const {words,tags}=captionWords(json,source.duration),lines=captionLines(words);if(lines.length)captions={kind:source.track.kind==='asr'?'auto':'track',language:source.track.language||null,lines,tags};}
+        if(!captions)references=parseCaptionReferences(json,source.videoId,source.duration);
+        if(source.track.attested&&!captions)captionError='자막에 대사가 없습니다';
+      }catch(e){if(signal.aborted)throw e;captionError=String(e?.message||e);}
     }
+    const reasons={'no-track':'이 영상에는 한국어 자막이 없습니다.','not-playing':'영상이 재생되기 전이라 YouTube 자동 자막을 받지 못했습니다.','no-request':'YouTube가 자막을 보내지 않았습니다.'};
+    const notices=message.options?.use_caption_references!==false&&!captions?[`${source.track?.attested&&captionError?`YouTube 자동 자막을 내려받지 못했습니다 (${captionError.slice(0,80)}).`:reasons[source.captionStatus]||'YouTube 자동 자막을 받지 못했습니다.'} 대사는 이 기기에서 음성 인식으로 만들었습니다.`]:[];
     if(current!==session||signal.aborted)return;
     // Install keys live in the service worker; this document only asks for one while analyzing.
-    const cloud=message.cloud?.enabled===true?{enabled:true,allowSynthetic:message.cloud.allowSynthetic===true,key:async renew=>(await send(session,{type:'CLOUD_KEY',renew}))?.key||null}:null;
+    const cloud=message.cloud?.enabled===true?{enabled:true,speech:message.cloud.speech!==false,sounds:message.cloud.sounds===true,allowSynthetic:message.cloud.allowSynthetic===true,key:async renew=>(await send(session,{type:'CLOUD_KEY',renew}))?.key||null}:null;
     const transport=source.transport||'page-direct';
     // Minutes are analyzed from the playhead onward; each finished minute is saved and shown at once.
     const position=async()=>{const state=await send(session,{type:'PLAYBACK_POSITION'});return Number.isFinite(state?.time)?state.time:null;};
-    const document=await analyzeFullStreaming({blob,videoId:source.videoId,title:source.title,expectedDuration:source.duration,options:{...message.options,capture_frames:false},references,cloud,correction:correctionConfig(message.correction,session),resume:message.resume||null,position,signal,
+    const document=await analyzeFullStreaming({blob,videoId:source.videoId,title:source.title,expectedDuration:source.duration,options:{...message.options,capture_frames:false},references,captions,notices,cloud,correction:correctionConfig(message.correction,session),resume:message.resume||null,position,signal,
       onProgress:update=>report({...update,progress:.05+.95*update.progress}),
       onChunk:async(doc,{remaining})=>{
         if(!remaining||current!==session||signal.aborted)return;

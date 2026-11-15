@@ -150,8 +150,8 @@ test('cancellation aborts a pending page lookup and discards its late source',as
  const pending=h.send({type:'FULL_AUDIO_LOOKUP',captureId},recorder);await tick();await h.send({type:'CANCEL'});gate.resolve();assert.equal((await pending).ok,false);assert.ok(h.messages.some(m=>m.type==='CANCEL_AUDIO_LOOKUP'&&m.captureId===captureId));assert.equal(h.storage.operation.phase,'cancelled');
 });
 
-const cloudServer=({available=true,synthetic=false,issue=[]}={})=>async(url,options={})=>{
-  if(url===`${CLOUD.origin}/v1/availability`)return new Response(JSON.stringify({available,synthetic,scope:'speech-only',install_daily_audio_minutes:20}),{status:200});
+const cloudServer=({available=true,synthetic=false,sounds=false,issue=[]}={})=>async(url,options={})=>{
+  if(url===`${CLOUD.origin}/v1/availability`)return new Response(JSON.stringify({available,synthetic,scope:'speech-only',install_daily_audio_minutes:20,sounds,sounds_synthetic:false}),{status:200});
   if(url===`${CLOUD.origin}/v1/installs`&&options.method==='POST'){const key='osi_'+String(issue.length).repeat(43).slice(0,43);issue.push(key);return new Response(JSON.stringify({install_key:key,daily_audio_minutes:20}),{status:201});}
   return new Response('{}',{status:404});
 };
@@ -166,7 +166,7 @@ test('cloud speech is offered only for real analysis and only after consent from
   assert.equal(h.storage.cloudConsent.choice,'granted');assert.equal(h.storage.cloudConsent.version,CLOUD.consentVersion);
   state=await h.send({type:'GET_STATE'});assert.equal(state.cloud.consent,'granted');
   await h.send({type:'ANALYZE_URL'});
-  assert.equal(JSON.stringify(h.messages.find(m=>m.type==='FULL_ANALYZE').cloud),JSON.stringify({enabled:true,allowSynthetic:false}));
+  assert.equal(JSON.stringify(h.messages.find(m=>m.type==='FULL_ANALYZE').cloud),JSON.stringify({enabled:true,speech:true,sounds:false,allowSynthetic:false}));
   assert.deepEqual(uploads(h),[]);
   const declined=await harness({storage:{localConsent:{enabled:true},cloudConsent:{choice:'declined',version:CLOUD.consentVersion}},cloudFetch:cloudServer()});
   await declined.send({type:'ANALYZE_URL'});assert.equal(declined.messages.find(m=>m.type==='FULL_ANALYZE').cloud.enabled,false);
@@ -179,7 +179,16 @@ test('a synthetic or unreachable server is never offered to users',async()=>{
     await h.send({type:'ANALYZE_URL'});assert.equal(h.messages.find(m=>m.type==='FULL_ANALYZE').cloud.enabled,false);
   }
   const qa=await harness({storage:{localConsent:{enabled:true},cloudConsent:{choice:'granted',version:CLOUD.consentVersion},cloudTest:{allowSynthetic:true}},cloudFetch:cloudServer({synthetic:true})});
-  await qa.send({type:'ANALYZE_URL'});assert.equal(JSON.stringify(qa.messages.find(m=>m.type==='FULL_ANALYZE').cloud),JSON.stringify({enabled:true,allowSynthetic:true}));
+  await qa.send({type:'ANALYZE_URL'});assert.equal(JSON.stringify(qa.messages.find(m=>m.type==='FULL_ANALYZE').cloud),JSON.stringify({enabled:true,speech:true,sounds:false,allowSynthetic:true}));
+});
+
+test('a server with only music/effect analysis is offered, and consent from before Gemini sounds is asked again',async()=>{
+  const old=await harness({storage:{localConsent:{enabled:true},cloudConsent:{choice:'granted',version:1}},cloudFetch:cloudServer({available:false,sounds:true})});
+  const state=await old.send({type:'GET_STATE'});assert.equal(state.cloud.offered,true);assert.equal(state.cloud.consent,null,'version 1 consent did not cover Gemini');
+  await old.send({type:'ANALYZE_URL'});assert.equal(old.messages.find(m=>m.type==='FULL_ANALYZE').cloud.enabled,false);
+  const h=await harness({storage:{localConsent:{enabled:true},cloudConsent:{choice:'granted',version:CLOUD.consentVersion}},cloudFetch:cloudServer({available:false,sounds:true})});
+  await h.send({type:'ANALYZE_URL'});
+  assert.equal(JSON.stringify(h.messages.find(m=>m.type==='FULL_ANALYZE').cloud),JSON.stringify({enabled:true,speech:false,sounds:true,allowSynthetic:false}));
 });
 
 test('install keys are issued once, renewed on request and given only to the active analysis document',async()=>{

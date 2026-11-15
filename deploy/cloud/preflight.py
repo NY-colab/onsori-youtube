@@ -52,6 +52,16 @@ def check(values, metrics):
             errors.append("ONSORI_CORRECTION_MODEL must be a DeepInfra model id such as owner/name")
         if values.get("ONSORI_CORRECTION_REASONING", "none") not in {"none", "minimal", "low", "medium", "high", "default"}:
             errors.append("Unsupported ONSORI_CORRECTION_REASONING")
+    sounds = values.get("ONSORI_SOUNDS", "disabled")
+    if sounds not in {"disabled", "mock", "gemini"}:
+        errors.append("Unsupported ONSORI_SOUNDS")
+    if sounds == "gemini":
+        key = values.get("GEMINI_API_KEY", "")
+        if not 16 <= len(key) <= 512 or any(not 33 <= ord(c) <= 126 for c in key):
+            errors.append("Sound description requires an operator-provided GEMINI_API_KEY")
+        model = values.get("ONSORI_SOUND_MODEL", "")
+        if model and not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,79}", model):
+            errors.append("ONSORI_SOUND_MODEL must be a Gemini model id such as gemini-4-hydrogen")
     return errors
 
 def main():

@@ -146,12 +146,12 @@ async function cloudAvailability(fresh=false){
   return cached&&!fresh?cached.value:availabilityRefresh;
 }
 async function fetchAvailability(){
-  let value={available:false,synthetic:false,corrections:false,correctionsSynthetic:false,correctionProvider:null,correctionModel:null};
-  try{const r=await fetch(`${CLOUD.origin}/v1/availability`,{credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(5000)});if(r.ok){const j=await r.json();value={available:j.available===true,synthetic:j.synthetic===true,dailyMinutes:Number.isFinite(j.install_daily_audio_minutes)?j.install_daily_audio_minutes:null,corrections:j.corrections===true,correctionsSynthetic:j.corrections_synthetic===true,correctionProvider:['deepinfra','anthropic','mock'].includes(j.correction_provider)?j.correction_provider:null,correctionModel:typeof j.correction_model==='string'&&MODEL_ID_PATTERN.test(j.correction_model)?j.correction_model:null};}}catch{}
+  let value={available:false,synthetic:false,corrections:false,correctionsSynthetic:false,correctionProvider:null,correctionModel:null,sounds:false,soundsSynthetic:false};
+  try{const r=await fetch(`${CLOUD.origin}/v1/availability`,{credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(5000)});if(r.ok){const j=await r.json();value={available:j.available===true,synthetic:j.synthetic===true,dailyMinutes:Number.isFinite(j.install_daily_audio_minutes)?j.install_daily_audio_minutes:null,corrections:j.corrections===true,correctionsSynthetic:j.corrections_synthetic===true,correctionProvider:['deepinfra','anthropic','mock'].includes(j.correction_provider)?j.correction_provider:null,correctionModel:typeof j.correction_model==='string'&&MODEL_ID_PATTERN.test(j.correction_model)?j.correction_model:null,sounds:j.sounds===true,soundsSynthetic:j.sounds_synthetic===true};}}catch{}
   await chrome.storage.session.set({cloudAvailability:{at:Date.now(),value}});return value;
 }
 // Synthetic (mock) servers are offered only to an isolated QA profile.
-async function cloudState(fresh=false){const [{cloudConsent,cloudTest},availability]=await Promise.all([chrome.storage.local.get(['cloudConsent','cloudTest']),cloudAvailability(fresh)]);const allowSynthetic=cloudTest?.allowSynthetic===true;return {offered:availability.available&&(!availability.synthetic||allowSynthetic),consent:cloudConsent?.version===CLOUD.consentVersion?cloudConsent.choice:null,dailyMinutes:availability.dailyMinutes,allowSynthetic};}
+async function cloudState(fresh=false){const [{cloudConsent,cloudTest},availability]=await Promise.all([chrome.storage.local.get(['cloudConsent','cloudTest']),cloudAvailability(fresh)]);const allowSynthetic=cloudTest?.allowSynthetic===true,speech=availability.available&&(!availability.synthetic||allowSynthetic),sounds=availability.sounds===true&&(!availability.soundsSynthetic||allowSynthetic);return {offered:speech||sounds,speech,sounds,consent:cloudConsent?.version===CLOUD.consentVersion?cloudConsent.choice:null,dailyMinutes:availability.dailyMinutes,allowSynthetic};}
 // One random key per install, issued by the server on first cloud use; never the operator token.
 async function cloudKey(renew){
   const {cloudInstall}=await chrome.storage.local.get('cloudInstall');if(cloudInstall?.key&&!renew)return cloudInstall.key;
@@ -211,14 +211,14 @@ async function startFull(inputOptions,sender={},automatic=false){
   await chrome.storage.local.set({analysisOptions:options});await setState({...base,phase:'preparing',message:resume?'분석해 둔 구간에 이어서 남은 구간을 분석합니다.':'영상 전체 오디오를 확인합니다.'},epoch);
   try{
     const initial=await notify(tab.id,{type:'VIDEO_STATE'});if(initial?.ad)throw new Error('광고가 끝난 뒤 전체 분석을 시작해 주세요.');
-    const data=await notify(tab.id,{type:'GET_FULL_SOURCE',videoId:id});
+    const data=await notify(tab.id,{type:'GET_FULL_SOURCE',videoId:id,language:options.language,captions:options.use_caption_references!==false});
     if(epoch!==operationEpoch)return {ok:true,cancelled:true};
     const source=selectFullSource(data,id,options.language,{allowLookup:true});await ensureOffscreen();
     if(epoch!==operationEpoch)return {ok:true,cancelled:true};
     const op={...base,title:source.title,expectedDuration:source.duration,phase:'running',message:'전체 오디오를 가져옵니다. 영상은 재생하지 않아도 됩니다.'};
     if(!await setState(op,epoch))return {ok:true,cancelled:true};
     const cloud=await cloudState(true).catch(()=>({offered:false}));
-    const result=await offscreen({type:'FULL_ANALYZE',captureId,source,options,cloud:{enabled:cloud.offered&&cloud.consent==='granted',allowSynthetic:cloud.allowSynthetic===true},correction:await correctionForAnalysis(),resume});
+    const result=await offscreen({type:'FULL_ANALYZE',captureId,source,options,cloud:{enabled:cloud.offered&&cloud.consent==='granted',speech:cloud.speech===true,sounds:cloud.sounds===true,allowSynthetic:cloud.allowSynthetic===true},correction:await correctionForAnalysis(),resume});
     if(epoch!==operationEpoch){await offscreen({type:'CAPTURE_DISCARD',captureId});return {ok:true,cancelled:true};}
     if(!result?.ok)throw new Error(result?.error||'전체 분석을 시작하지 못했습니다.');return {ok:true};
   }catch(e){if(epoch!==operationEpoch)return {ok:true,cancelled:true};await rememberAuto(`${tab.id}:${id}`,{failed:true});await setState({...base,phase:'error',message:messageError(e)},epoch);throw e;}

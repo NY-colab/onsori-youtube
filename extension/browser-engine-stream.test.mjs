@@ -38,7 +38,7 @@ function installMocks(duration){
   class AudioMock{async decodeAudioData(){const pcm=new Float32Array(Math.round(duration*SR)).fill(.1);return {duration,length:pcm.length,sampleRate:SR,numberOfChannels:1,getChannelData:()=>pcm};}async close(){}}
   class WorkerMock{
     constructor(){state.workers++;}
-    postMessage(message){state.posts.push({keep:message.keep,seconds:message.pcm.byteLength/4/SR});const n=++state.spoken;queueMicrotask(()=>{this.onmessage?.({data:{type:'progress',progress:.5,message:'한국어 대사 분석'}});this.onmessage?.({data:{type:'result',asr:{text:`대사 ${n}`,chunks:[{text:`대사 ${n}번입니다`,timestamp:[3,5]}]},windows:[],runtime:{device:'wasm'}}});});}
+    postMessage(message){state.posts.push({keep:message.keep,asr:message.asr,seconds:message.pcm.byteLength/4/SR});const n=++state.spoken;queueMicrotask(()=>{this.onmessage?.({data:{type:'progress',progress:.5,message:'한국어 대사 분석'}});this.onmessage?.({data:{type:'result',asr:{text:`대사 ${n}`,chunks:[{text:`대사 ${n}번입니다`,timestamp:[3,5]}]},windows:[],runtime:{device:'wasm'}}});});}
     terminate(){state.terminated++;}
   }
   Object.defineProperty(globalThis,'AudioContext',{configurable:true,value:AudioMock});Object.defineProperty(globalThis,'Worker',{configurable:true,value:WorkerMock});
@@ -74,5 +74,25 @@ test('a Haiku failure keeps raw text, and a rejected key stops correcting later 
     const doc=await analyzeFullStreaming({blob:new Blob(['audio']),videoId,title:'영상',expectedDuration:130,options:{event_detection:false},correction:{enabled:true,apiKey:'not-a-valid-key'}});
     assert.equal(doc.cues.filter(c=>c.kind==='speech').length,2);assert.ok(doc.cues.every(c=>!c.ai_correction));
     assert.equal(doc.metadata.ai_correction.status,'failed');assert.ok(doc.warnings.some(w=>/AI 자막 보정/.test(w)));
+  }finally{mocks.restore();}
+});
+test('YouTube caption lines replace speech recognition: sound-only inference, measured size, caption source',async()=>{
+  const mocks=installMocks(130);
+  try{
+    const lines=[{start:2,end:4,text:'첫 대사입니다.'},{start:59,end:62.5,text:'경계에 걸친 대사'},{start:100,end:103,text:'마지막 대사'}];
+    const published=[];
+    const doc=await analyzeFullStreaming({blob:new Blob(['audio']),videoId,title:'영상',expectedDuration:130,options:{event_detection:false},captions:{kind:'auto',lines},cloud:{enabled:true},onChunk:d=>published.push(d)});
+    assert.ok(mocks.posts.length>=2&&mocks.posts.every(p=>p.asr===false),'Whisper is never asked to run');
+    const speech=doc.cues.filter(c=>c.kind==='speech');
+    assert.deepEqual(speech.map(c=>c.text),lines.map(l=>l.text));
+    assert.deepEqual(speech.map(c=>[c.start,c.end]),lines.map(l=>[l.start,l.end]),'caption timing is kept, never clipped at a minute edge');
+    assert.ok(speech.every(c=>c.source==='youtube-auto-caption'&&Number.isFinite(c.scale)&&Array.isArray(c.volume_profile)));
+    assert.equal(doc.metadata.speech_source,'youtube-auto-caption');
+    assert.ok(doc.warnings.some(w=>/YouTube 자동 자막/.test(w)));assert.ok(!doc.warnings.some(w=>/클라우드/.test(w)));
+    // A document analyzed with speech recognition is not resumed in caption mode (and the reverse).
+    mocks.posts.length=0;
+    const recognized=await analyzeFullStreaming({blob:new Blob(['audio']),videoId,title:'영상',expectedDuration:130,options:{event_detection:false},resume:published[0]});
+    assert.ok(mocks.posts.every(p=>p.asr!==false));assert.equal(recognized.metadata.speech_source,'recognition');
+    assert.equal(recognized.cues.filter(c=>c.kind==='speech').length,mocks.posts.length);
   }finally{mocks.restore();}
 });

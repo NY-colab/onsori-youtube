@@ -32,3 +32,23 @@ test('player exception retains matching initial data; foreign page messages get 
   assert.equal(b.send({source:{}}),undefined);
   assert.equal(b.send({data:{type:'ONSORI_SOURCE_REQUEST',nonce:'n',videoId:'zzzzzzzzzzz'}}),undefined);
 });
+test('captions: shows the track only until the player requests it, then restores the viewer setting',async()=>{
+  let listener,reply,observe;const calls=[];let track={};
+  const potUrl=`${origin}/api/timedtext?v=${id}&lang=ko&kind=asr&pot=token&fmt=json3`;
+  const player={getPlayerResponse:()=>response({streamingData:stream,captions:{playerCaptionsTracklistRenderer:{captionTracks:[{baseUrl:origin+'/api/timedtext?v='+id+'&lang=ko&kind=asr',languageCode:'ko',kind:'asr'}]}}}),
+    getPlayerState:()=>1,getOption:()=>track,
+    setOption(_m,_k,value){calls.push(value);track=value;if(value.languageCode)setTimeout(()=>observe({getEntries:()=>[{name:potUrl},{name:origin+'/api/timedtext?v='+id+'&lang=ko'}]}),150);}};
+  class PerformanceObserver{constructor(fn){observe=fn;}observe(){}}
+  const window={addEventListener(type,fn){listener=fn;},postMessage(message){reply=message;}};
+  vm.runInNewContext(source,{window,PerformanceObserver,setTimeout,document:{querySelector:s=>s==='#movie_player'?player:null},location:{href:origin+'/watch?v='+id,origin,pathname:'/watch'},URL});
+  await listener({source:window,origin,data:{type:'ONSORI_SOURCE_REQUEST',nonce:'n1',videoId:id,language:'ko',captions:true}});
+  assert.equal(reply.data.captionRequest.url,potUrl);assert.equal(JSON.stringify(calls),JSON.stringify([{languageCode:'ko'},{}]),'captions were off, so they are turned off again');
+  assert.equal(selectFullSource(reply.data,id).track.attested,true);
+  // Already requested by the player: no caption toggling at all.
+  calls.length=0;track={languageCode:'ko',kind:'asr'};
+  await listener({source:window,origin,data:{type:'ONSORI_SOURCE_REQUEST',nonce:'n2',videoId:id,language:'ko',captions:true}});
+  assert.equal(reply.data.captionRequest.url,potUrl);assert.equal(calls.length,0);
+  // Without the captions flag the reply is immediate and carries no caption request.
+  await listener({source:window,origin,data:{type:'ONSORI_SOURCE_REQUEST',nonce:'n3',videoId:id}});
+  assert.equal(reply.data.captionRequest,undefined);
+});

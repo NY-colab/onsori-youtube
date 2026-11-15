@@ -24,6 +24,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   const nonce=crypto.randomUUID(),origin=location.origin;
   const finish=value=>{clearTimeout(timer);window.removeEventListener('message',listener);reply(value);};
   const listener=event=>{const m=event.data;if(event.source===window&&event.origin===origin&&m?.type==='ONSORI_SOURCE_RESPONSE'&&m.nonce===nonce&&m.videoId===message.videoId)finish(m.data);};
-  const timer=setTimeout(()=>finish(null),5000);window.addEventListener('message',listener);
-  window.postMessage({type:'ONSORI_SOURCE_REQUEST',nonce,videoId:message.videoId},origin);return true;
+  // Reading the caption request can take up to about 19 s (the player is asked to show captions).
+  const timer=setTimeout(()=>finish(null),message.captions===true?22000:5000);window.addEventListener('message',listener);
+  window.postMessage({type:'ONSORI_SOURCE_REQUEST',nonce,videoId:message.videoId,language:message.language,captions:message.captions===true},origin);return true;
 });

@@ -6,6 +6,7 @@ both provider=deepinfra and allow_paid=true; the default cannot send audio out.
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -61,7 +62,7 @@ MAX_CORRECTION_BODY = 64 * 1024
 MAX_CORRECTION_REPLY = 1024 * 1024
 CORRECTION_TIMEOUT_SECONDS = 60
 CORRECTION_SYSTEM = """당신은 한국어 유튜브 자막 교정자입니다.
-입력은 음성 인식(Whisper)이 만든 자막 줄입니다. 인식 오류로 생긴 오타만 고칩니다.
+입력은 음성 인식(YouTube 자동 자막 또는 Whisper)이 만든 자막 줄입니다. 인식 오류로 생긴 오타만 고칩니다.
 
 고칠 것:
 - 철자·맞춤법 오류, 잘못 붙거나 띄운 띄어쓰기
@@ -80,6 +81,52 @@ CORRECTION_SCHEMA = {"type": "object", "additionalProperties": False, "required"
                      "properties": {"corrections": {"type": "array", "items": {
                          "type": "object", "additionalProperties": False, "required": ["id", "text"],
                          "properties": {"id": {"type": "string"}, "text": {"type": "string"}}}}}}
+
+
+# Music and sound-effect description (consented installs only): one WAV of at most 40 s goes to the
+# Google Gemini API with the operator's key. Speech is never taken from this answer.
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+SOUND_MODEL = "gemini-4-hydrogen"
+MAX_SOUND_SECONDS = 40
+MAX_SOUND_BODY = 44 + MAX_SOUND_SECONDS * 16000 * 2 + 4096
+MAX_SOUND_REPLY = 1024 * 1024
+SOUND_TIMEOUT_SECONDS = 120
+# Same wording as the 2026-11-14/15 measurements (sfx-ai-test-261114), so behaviour matches them.
+SOUND_PROMPT = (
+    "이 오디오는 한국어 영상의 소리입니다. 청각장애인을 위한 자막을 만들려고 합니다.\n"
+    "들리는 모든 소리를 시간 순서대로 적어 주세요.\n"
+    "- speech: 사람이 한 말을 들리는 그대로 한국어로 받아 적습니다. 바꾸거나 요약하지 않습니다.\n"
+    "- music: 배경 음악이나 악기 소리를 한국어로 짧게 묘사합니다(악기, 분위기).\n"
+    "- sound: 효과음(문 닫힘, 재채기, 박수 등)을 한국어로 짧게 묘사합니다.\n"
+    "각 항목에 시작·끝 시각(초, 소수 한 자리)을 붙입니다. 소리가 겹치면 각각 따로 적습니다.\n"
+    'JSON만 출력합니다: {"events":[{"start":0.0,"end":1.0,"kind":"speech|music|sound","text":"..."}]}'
+)
+# HTTP status from Google -> fixed gateway status and code. 429 also covers a spent project budget.
+GEMINI_FAILURES = {400: (502, "sound_bad_request"), 401: (503, "sound_provider_auth"), 403: (503, "sound_provider_auth"),
+                   404: (503, "sound_model_unavailable"), 429: (429, "sound_quota")}
+
+
+def sound_events(text: str, duration: float) -> list[dict]:
+    """Music and sound events from a model answer; anything malformed is dropped, speech is ignored."""
+    body = re.sub(r"^```(?:json)?|```$", "", (text or "").strip(), flags=re.M).strip()
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        raise HTTPException(502, "sound_invalid_output") from None
+    events = data.get("events") if isinstance(data, dict) else None
+    if not isinstance(events, list):
+        raise HTTPException(502, "sound_invalid_output")
+    out = []
+    for e in events[:200]:
+        if not isinstance(e, dict) or e.get("kind") not in ("music", "sound") or not isinstance(e.get("text"), str):
+            continue
+        start, end = e.get("start"), e.get("end")
+        if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in (start, end)):
+            continue
+        start, end, label = max(0.0, float(start)), min(duration, float(end)), " ".join(e["text"].split())[:80]
+        if end - start >= 0.2 and label:
+            out.append({"start": round(start, 2), "end": round(end, 2), "kind": e["kind"], "text": label})
+    return out
 
 
 def correction_payload(value: Any) -> dict:
@@ -133,6 +180,11 @@ class Settings:
     correction_reasoning: str = "none"  # DeepInfra reasoning_effort; "default" omits it.
     daily_correction_lines: int = 20000
     install_daily_correction_lines: int = 3000
+    sounds: str = "disabled"  # disabled | mock | gemini
+    gemini_api_key: str = ""
+    sound_model: str = ""  # Gemini model id; empty means SOUND_MODEL.
+    daily_sound_minutes: float = 240
+    install_daily_sound_minutes: float = 60
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -159,6 +211,11 @@ class Settings:
             correction_reasoning=os.getenv("ONSORI_CORRECTION_REASONING", "none"),
             daily_correction_lines=int(os.getenv("ONSORI_DAILY_CORRECTION_LINES", "20000")),
             install_daily_correction_lines=int(os.getenv("ONSORI_INSTALL_DAILY_CORRECTION_LINES", "3000")),
+            sounds=os.getenv("ONSORI_SOUNDS", "disabled"),
+            gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
+            sound_model=os.getenv("ONSORI_SOUND_MODEL", ""),
+            daily_sound_minutes=float(os.getenv("ONSORI_DAILY_SOUND_MINUTES", "240")),
+            install_daily_sound_minutes=float(os.getenv("ONSORI_INSTALL_DAILY_SOUND_MINUTES", "60")),
         )
 
     def validate(self) -> None:
@@ -187,6 +244,15 @@ class Settings:
                 raise ValueError("ONSORI_CORRECTION_REASONING must be one of " + ", ".join(CORRECTION_REASONING))
         if not 1 <= self.install_daily_correction_lines <= self.daily_correction_lines <= 1_000_000:
             raise ValueError("Correction line limits must satisfy 1 <= install <= server <= 1000000")
+        if self.sounds not in ("disabled", "mock", "gemini"):
+            raise ValueError("Unsupported ONSORI_SOUNDS")
+        if self.sounds == "gemini" and not re.fullmatch(r"[\x21-\x7e]{16,512}", self.gemini_api_key):
+            raise ValueError("GEMINI_API_KEY is required for sound description")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,79}", self.sound_model_name):
+            raise ValueError("ONSORI_SOUND_MODEL must be a Gemini model id such as gemini-4-hydrogen")
+        if not (math.isfinite(self.install_daily_sound_minutes) and math.isfinite(self.daily_sound_minutes)
+                and 0 < self.install_daily_sound_minutes <= self.daily_sound_minutes <= 100000):
+            raise ValueError("Sound minute limits must satisfy 0 < install <= server <= 100000")
         if not 1 <= self.installs_per_ip_day <= 100:
             raise ValueError("ONSORI_INSTALLS_PER_IP_DAY must be 1..100")
         for value in (self.daily_audio_minutes, self.install_daily_audio_minutes, self.result_ttl_seconds,
@@ -202,6 +268,14 @@ class Settings:
     def correction_enabled(self) -> bool:
         return (self.correction == "mock" or (self.correction == "anthropic" and bool(self.anthropic_api_key))
                 or (self.correction == "deepinfra" and bool(self.deepinfra_api_key)))
+
+    @property
+    def sounds_enabled(self) -> bool:
+        return self.sounds == "mock" or (self.sounds == "gemini" and bool(self.gemini_api_key))
+
+    @property
+    def sound_model_name(self) -> str:
+        return "mock" if self.sounds == "mock" else (self.sound_model or SOUND_MODEL)
 
     @property
     def correction_model_name(self) -> str | None:
@@ -385,6 +459,8 @@ class Gateway:
         # Tests inject a fake Anthropic client; DeepInfra tests inject `transport` instead.
         self.correction_client = correction_client
         self.correction_slots = asyncio.Semaphore(4)
+        self.sound_client: Any = None
+        self.sound_slots = asyncio.Semaphore(4)
         self.directory = settings.data_dir.resolve()
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=settings.max_queue)
         self.submit_lock = asyncio.Lock()
@@ -423,6 +499,10 @@ class Gateway:
                   day TEXT NOT NULL, install_id TEXT NOT NULL, lines INTEGER NOT NULL,
                   PRIMARY KEY (day, install_id)
                 );
+                CREATE TABLE IF NOT EXISTS sound_usage (
+                  day TEXT NOT NULL, install_id TEXT NOT NULL, seconds REAL NOT NULL,
+                  PRIMARY KEY (day, install_id)
+                );
             """)
             # Databases from before install keys gain the owner column in place.
             if "install_id" not in {r[1] for r in self.db.execute("PRAGMA table_info(jobs)")}:
@@ -445,6 +525,11 @@ class Gateway:
                 self.correction_client = httpx.AsyncClient(
                     timeout=httpx.Timeout(CORRECTION_TIMEOUT_SECONDS, connect=10), follow_redirects=False,
                     trust_env=False, transport=self.transport)
+            if self.settings.sounds == "gemini":
+                # No automatic retries: a repeated request could be billed twice.
+                self.sound_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(SOUND_TIMEOUT_SECONDS, connect=10), follow_redirects=False,
+                    trust_env=False, transport=self.transport)
             self.worker_task = asyncio.create_task(self.worker())
             self.sweeper_task = asyncio.create_task(self.sweeper())
         except BaseException:
@@ -464,10 +549,11 @@ class Gateway:
         self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.db.close()
         self.lock.close()
-        close = getattr(self.correction_client, "aclose", None) or getattr(self.correction_client, "close", None)
-        if close is not None:
-            with suppress(Exception):
-                await close()
+        for client in (self.correction_client, self.sound_client):
+            close = getattr(client, "aclose", None) or getattr(client, "close", None)
+            if close is not None:
+                with suppress(Exception):
+                    await close()
 
     def row(self, job_id: str, install_id: str | None = None) -> sqlite3.Row:
         row = self.db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -800,6 +886,80 @@ class Gateway:
                                and re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", reply["model"]) else model,
                                input_tokens=tokens[0], output_tokens=tokens[1])
 
+    def reserve_sound(self, install_id: str | None, seconds: float) -> None:
+        """Durable before the external request; a reservation is not refunded on failure."""
+        day, owner = utc_day(), install_id or ""
+        with self.db:
+            used = self.db.execute("SELECT COALESCE(SUM(seconds),0) FROM sound_usage WHERE day=?", (day,)).fetchall()[0][0]
+            mine = self.db.execute("SELECT COALESCE(SUM(seconds),0) FROM sound_usage WHERE day=? AND install_id=?",
+                                   (day, owner)).fetchall()[0][0]
+            refused = None
+            if used + seconds > self.settings.daily_sound_minutes * 60:
+                refused = "daily_sound_limit"
+            elif install_id is not None and mine + seconds > self.settings.install_daily_sound_minutes * 60:
+                refused = "install_daily_sound_limit"
+            if refused:
+                self.count("limit_rejections")
+                raise HTTPException(429, refused)
+            self.db.execute("INSERT INTO sound_usage(day,install_id,seconds) VALUES (?,?,?) ON CONFLICT(day,install_id) "
+                            "DO UPDATE SET seconds=seconds+excluded.seconds", (day, owner, seconds))
+            self.count("sound_seconds", seconds)
+
+    async def describe_sounds(self, payload: bytes, install_id: str | None) -> dict:
+        if not self.settings.sounds_enabled:
+            raise HTTPException(503, "sounds_disabled")
+        duration = wav_duration(payload)
+        if duration > MAX_SOUND_SECONDS + 0.01:
+            raise HTTPException(422, "sound_duration_out_of_range")
+        self.reserve_sound(install_id, duration)
+        if self.settings.sounds == "mock":
+            with self.db:
+                self.count("sound_requests")
+            return {"events": [], "model": "mock", "usage": None, "synthetic": True}
+        model = self.settings.sound_model_name
+        body = {"contents": [{"role": "user", "parts": [
+                    {"inline_data": {"mime_type": "audio/wav", "data": base64.b64encode(payload).decode()}},
+                    {"text": SOUND_PROMPT}]}],
+                # LOW: thinking cannot be switched off on this model, and higher levels shifted times.
+                "generationConfig": {"maxOutputTokens": 8000, "thinkingConfig": {"thinkingLevel": "LOW"}}}
+        raw = bytearray()
+        async with self.sound_slots:
+            try:
+                async with self.sound_client.stream("POST", GEMINI_URL.format(model=model), json=body,
+                                                    headers={"x-goog-api-key": self.settings.gemini_api_key}) as response:
+                    if response.status_code != 200:
+                        with self.db:
+                            self.count("sound_failures")
+                        raise HTTPException(*GEMINI_FAILURES.get(response.status_code, (502, "sound_provider_error")))
+                    async for chunk in response.aiter_bytes():
+                        if len(raw) + len(chunk) > MAX_SOUND_REPLY:
+                            raise HTTPException(502, "sound_provider_error")
+                        raw.extend(chunk)
+            except httpx.TimeoutException:
+                raise HTTPException(504, "sound_timeout") from None
+            except httpx.HTTPError:
+                raise HTTPException(502, "sound_network_error") from None
+        try:
+            reply = json.loads(raw)
+            candidate = reply["candidates"][0]
+            parts = candidate.get("content", {}).get("parts", [])
+            text = "".join(p["text"] for p in parts if isinstance(p, dict) and isinstance(p.get("text"), str) and not p.get("thought"))
+        except (ValueError, UnicodeError, KeyError, IndexError, TypeError, AttributeError):
+            raise HTTPException(502, "sound_invalid_output") from None
+        if candidate.get("finishReason") not in (None, "STOP"):
+            raise HTTPException(502, "sound_truncated" if candidate.get("finishReason") == "MAX_TOKENS" else "sound_refused")
+        events = sound_events(text, duration)
+        meta = reply.get("usageMetadata") if isinstance(reply.get("usageMetadata"), dict) else {}
+        count = lambda name: meta.get(name) if isinstance(meta.get(name), int) and meta.get(name) >= 0 else 0
+        usage = {"input_tokens": count("promptTokenCount"), "output_tokens": count("candidatesTokenCount") + count("thoughtsTokenCount")}
+        with self.db:
+            self.count("sound_requests")
+            self.count("sound_input_tokens", usage["input_tokens"])
+            self.count("sound_output_tokens", usage["output_tokens"])
+        answered = reply.get("modelVersion")
+        return {"events": events, "usage": usage,
+                "model": answered if isinstance(answered, str) and re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", answered) else model}
+
     def cancel(self, job_id: str, install_id: str | None = None) -> dict:
         row = self.row(job_id, install_id)
         if row["status"] not in TERMINAL:
@@ -853,7 +1013,16 @@ class Gateway:
                   f'onsori_correction_lines_total {counters.get("correction_lines", 0):g}',
                   "# TYPE onsori_correction_tokens_total counter",
                   f'onsori_correction_tokens_total{{direction="input"}} {counters.get("correction_input_tokens", 0):g}',
-                  f'onsori_correction_tokens_total{{direction="output"}} {counters.get("correction_output_tokens", 0):g}']
+                  f'onsori_correction_tokens_total{{direction="output"}} {counters.get("correction_output_tokens", 0):g}',
+                  "# TYPE onsori_sound_requests_total counter",
+                  f'onsori_sound_requests_total {counters.get("sound_requests", 0):g}',
+                  "# TYPE onsori_sound_failures_total counter",
+                  f'onsori_sound_failures_total {counters.get("sound_failures", 0):g}',
+                  "# TYPE onsori_sound_audio_seconds_total counter",
+                  f'onsori_sound_audio_seconds_total {counters.get("sound_seconds", 0):g}',
+                  "# TYPE onsori_sound_tokens_total counter",
+                  f'onsori_sound_tokens_total{{direction="input"}} {counters.get("sound_input_tokens", 0):g}',
+                  f'onsori_sound_tokens_total{{direction="output"}} {counters.get("sound_output_tokens", 0):g}']
         return "\n".join(lines) + "\n"
 
 
@@ -873,7 +1042,7 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(UploadLimitMiddleware)
     app.add_middleware(CORSMiddleware, allow_origin_regex=EXTENSION_ORIGIN, allow_methods=["GET", "POST", "DELETE"],
-                       allow_headers=["Authorization", "Idempotency-Key"], max_age=600)
+                       allow_headers=["Authorization", "Idempotency-Key", "Content-Type", "X-OnSori-Consent"], max_age=600)
 
     def authenticate(request: Request, *, metrics: bool = False) -> Gateway:
         gateway = request.app.state.gateway
@@ -919,7 +1088,10 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
                 "install_daily_audio_minutes": settings.install_daily_audio_minutes,
                 "corrections": settings.correction_enabled, "corrections_synthetic": settings.correction == "mock",
                 "correction_provider": settings.correction if settings.correction_enabled else None,
-                "correction_model": settings.correction_model_name if settings.correction_enabled else None}
+                "correction_model": settings.correction_model_name if settings.correction_enabled else None,
+                "sounds": settings.sounds_enabled, "sounds_synthetic": settings.sounds == "mock",
+                "sound_model": settings.sound_model_name if settings.sounds_enabled else None,
+                "install_daily_sound_minutes": settings.install_daily_sound_minutes}
 
     @app.post("/v1/installs")
     async def issue(request: Request):
@@ -984,6 +1156,19 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
         except (ValueError, UnicodeError):
             raise HTTPException(400, "invalid_json") from None
         return await gateway.correct(value, install)
+
+    @app.post("/v1/sounds")
+    async def sounds(request: Request):
+        gateway, install = caller(request)  # Authenticate before reading the body.
+        if request.headers.get("x-onsori-consent") != "sounds":
+            raise HTTPException(422, "explicit_consent_required")
+        length = request.headers.get("content-length", "")
+        if not length.isdigit() or int(length) > MAX_SOUND_BODY:
+            raise HTTPException(413, "sound_too_large")
+        body = await request.body()
+        if len(body) > MAX_SOUND_BODY:
+            raise HTTPException(413, "sound_too_large")
+        return await gateway.describe_sounds(body, install)
 
     @app.get("/v1/jobs/{job_id}")
     async def get_job(job_id: str, request: Request):

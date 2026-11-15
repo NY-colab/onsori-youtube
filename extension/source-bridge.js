@@ -29,7 +29,12 @@
     const formats = (Array.isArray(data.formats) ? data.formats : []).filter((f) => !f.drm && mediaUrl(f.url) && /^audio\/(mp4|webm)(;|$)/.test(f.mimeType || "") && (!f.audioTrack || f.audioTrack.audioIsDefault !== false) && !(Number(f.contentLength) > FULL_LIMITS.bytes)).sort((a, b) => Number(b.audioTrack?.audioIsDefault === true) - Number(a.audioTrack?.audioIsDefault === true) || Number(b.mimeType.startsWith("audio/mp4")) - Number(a.mimeType.startsWith("audio/mp4")) || (Number(a.bitrate) || 128e3) - (Number(b.bitrate) || 128e3));
     if (!formats.length && !allowLookup) throw new Error("\uC774 \uC601\uC0C1\uC5D0\uC11C \uBD84\uC11D \uAC00\uB2A5\uD55C \uC804\uCCB4 \uC624\uB514\uC624 \uC8FC\uC18C\uB97C \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
     const tracks = (Array.isArray(data.tracks) ? data.tracks : []).filter((t) => captionUrl(t.url, videoId)).sort((a, b) => Number(b.language === language) - Number(a.language === language) || Number(a.kind === "asr") - Number(b.kind === "asr"));
-    return { videoId, title: String(data.title || "").slice(0, 300), duration, url: mediaUrl(formats[0]?.url), mimeType: formats[0]?.mimeType, bytes: Number(formats[0]?.contentLength) || null, track: tracks[0] ? { url: captionUrl(tracks[0].url, videoId), kind: tracks[0].kind } : null };
+    return { videoId, title: String(data.title || "").slice(0, 300), duration, url: mediaUrl(formats[0]?.url), mimeType: formats[0]?.mimeType, bytes: Number(formats[0]?.contentLength) || null, track: pickTrack(data.captionRequest, tracks, videoId, language), ...typeof data.captionStatus === "string" ? { captionStatus: data.captionStatus.slice(0, 40) } : {} };
+  }
+  function pickTrack(request, tracks, videoId, language) {
+    const url = captionUrl(request?.url, videoId);
+    if (url && new URL(url).searchParams.get("pot") && (language === "auto" || request.language === language)) return { url, kind: request.kind === "asr" ? "asr" : "standard", language: String(request.language || "").slice(0, 20), attested: true };
+    return tracks[0] ? { url: captionUrl(tracks[0].url, videoId), kind: tracks[0].kind } : null;
   }
   async function boundedDownload(url, { signal, maxBytes = FULL_LIMITS.bytes, onProgress, fetcher = fetch, request = {} } = {}) {
     const response = await fetcher(url, { ...request, signal, credentials: "omit", redirect: "error", cache: "no-store" });
@@ -147,9 +152,9 @@
       const m = event.data;
       if (event.source === window && event.origin === origin && m?.type === "ONSORI_SOURCE_RESPONSE" && m.nonce === nonce && m.videoId === message.videoId) finish(m.data);
     };
-    const timer = setTimeout(() => finish(null), 5e3);
+    const timer = setTimeout(() => finish(null), message.captions === true ? 22e3 : 5e3);
     window.addEventListener("message", listener);
-    window.postMessage({ type: "ONSORI_SOURCE_REQUEST", nonce, videoId: message.videoId }, origin);
+    window.postMessage({ type: "ONSORI_SOURCE_REQUEST", nonce, videoId: message.videoId, language: message.language, captions: message.captions === true }, origin);
     return true;
   });
 })();
