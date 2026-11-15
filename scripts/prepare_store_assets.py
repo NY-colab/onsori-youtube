@@ -25,6 +25,8 @@ fields = [('확장 이름',listing['name']),('간략한 설명',listing['summary
 fields += [(key+' 권한 사유',value) for key,value in listing['permissions'].items()]
 fields += [('원격 코드 설명 — 원격 코드 없음',listing['remote_code_explanation']),
            ('데이터 처리 설명',listing['data_disclosures']['explanation']),('심사자 테스트 안내',listing['reviewer_instructions'])]
+if listing.get('reviewer_instructions_0_4_0'):
+    fields.append(('추가 안내(500자 칸) — 0.4.0 변경점',listing['reviewer_instructions_0_4_0']))
 page = '''<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>온소리 웹스토어 등록 도우미</title>
 <style>body{font-family:"Malgun Gothic",sans-serif;max-width:960px;margin:32px auto;padding:0 20px;background:#15131e;color:#eee}h1{font-size:28px}p,li{line-height:1.8;color:#c8c1d5}a{color:#a4efcf}section{border:1px solid #463c53;border-radius:12px;padding:18px;margin:14px 0}h2{font-size:17px;margin:0 0 12px}textarea{box-sizing:border-box;width:100%;min-height:85px;padding:12px;background:#24202e;color:#eee;border:1px solid #655673;border-radius:6px;font:13px/1.7 sans-serif}button{margin-top:10px;background:#a4efcf;color:#173b2e;border:0;border-radius:7px;padding:10px 18px;font-weight:bold;cursor:pointer}.tag{color:#f6cc7a}img{max-width:100%;height:auto;border-radius:12px}.assets{display:flex;flex-wrap:wrap;gap:18px}small{display:block;margin:10px 0;color:#bbb}</style>
 <h1>온소리 자막 in YouTube · 스토어 등록자료</h1><p class="tag">__VERSION__ · 새 아이콘·상세 이미지 반영본</p>
