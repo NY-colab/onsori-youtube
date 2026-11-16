@@ -5,7 +5,7 @@ export function normalizeSettings(value={}) {
   const s={...DEFAULT_SETTINGS,...normalizeCaptionStyle(value)};
   for(const key of ['autoAnalyze','enabled','showSpeech','showSound','showMusic']) if(typeof value[key]==='boolean') s[key]=value[key];
   if(['simple','standard','rich'].includes(value.infoLevel)) s.infoLevel=value.infoLevel;
-  if([0,.5,1].includes(Number(value.effectStrength))) s.effectStrength=Number(value.effectStrength);
+  if([0,.5,1,1.5,2].includes(Number(value.effectStrength))) s.effectStrength=Number(value.effectStrength);
   // Migrate stored pre-v2 preferences exactly once, including custom sizes.
   if(value.baseSize!=null&&Number.isFinite(Number(value.baseSize))) s.baseSize=Math.min(28,Math.max(8,Number(value.baseSize)*(value.typographyVersion===2?1:.5)));
   if(Number.isFinite(Number(value.offset))) s.offset=Math.min(30,Math.max(-30,Number(value.offset)));
@@ -43,6 +43,7 @@ export function validateDocument(input){
       });
     }
     if(c.details!=null) cue.details=string(c.details,'상세 설명',4000);
+    if(c.speaker!=null&&c.kind==='speech') cue.speaker=string(c.speaker,'발화자',40);
     if(c.speech_correction!=null){
       const r=c.speech_correction;
       if(!r||typeof r!=='object'||!['youtube-human-caption','youtube-native-caption','youtube-screen-ocr'].includes(r.reference_source)||r.reference_video_id!==video_id)fail('대사 교정 출처가 올바르지 않습니다.');
@@ -82,12 +83,57 @@ export function trimVolumeProfile(profile,start,end){
   if(points.length>12000)points.splice(12000);
   return [volumePointAt(profile,start),...points,volumePointAt(profile,end)];
 }
-export function captionSize(cue,settings=DEFAULT_SETTINGS){
-  // The analyzer calculates scale from RMS over the entire cue interval.
-  // Keep that value throughout the cue; the 100 ms profile is diagnostic only.
-  const scale=cue.scale??1;
-  return Math.round(settings.baseSize*(1+(scale-1)*settings.effectStrength)*10)/10;
+// Loudness-to-size mapping. Edited videos keep dialogue within a few dB, so the
+// stored analyzer scale (whole-line RMS against the whole-video median, 1 dB = 2.5%)
+// changes most lines by about 1px. Sizes are therefore derived at display time:
+// each cue's loud part (75th percentile of its 100 ms levels) is compared with the
+// video's typical dialogue line. Louder lines grow by LOUDNESS_UP per dB and quieter ones
+// shrink more gently (LOUDNESS_DOWN per dB), so shouting stands out and quiet lines stay readable.
+export const LOUDNESS_UP=1/12,LOUDNESS_DOWN=1/20,LOUDNESS_MIN=.8,LOUDNESS_MAX=1.6;
+const loudnessCache=new WeakMap(),contextCache=new WeakMap();
+// Relative dB (against the analyzer's whole-video reference) of the cue's loud part.
+export function cueLoudness(cue){
+  if(!cue||typeof cue!=='object')return null;
+  if(loudnessCache.has(cue))return loudnessCache.get(cue);
+  let value=Number.isFinite(cue.relative_db)?cue.relative_db:null;
+  const reference=Number.isFinite(cue.dbfs)&&Number.isFinite(cue.relative_db)?cue.dbfs-cue.relative_db:null;
+  const levels=reference===null?[]:(cue.volume_profile||[]).slice(0,-1).map(p=>p.dbfs).filter(v=>Number.isFinite(v)&&v>-60).sort((a,b)=>a-b);
+  if(levels.length>=3)value=levels[Math.floor((levels.length-1)*.75)]-reference;
+  loudnessCache.set(cue,value);return value;
 }
+// The video's typical dialogue loudness (median over speech cues), so ordinary lines
+// stay at the chosen size and only louder or quieter ones grow or shrink.
+export function loudnessContext(doc){
+  const cues=doc?.cues;if(!Array.isArray(cues))return null;
+  const cached=contextCache.get(cues);if(cached&&cached.count===cues.length)return cached;
+  const pick=list=>list.map(cueLoudness).filter(Number.isFinite).sort((a,b)=>a-b);
+  let values=pick(cues.filter(c=>c.kind==='speech'));if(values.length<3)values=pick(cues);
+  const m=values.length>>1,center=!values.length?0:values.length%2?values[m]:(values[m-1]+values[m])/2;
+  const context={count:cues.length,center};contextCache.set(cues,context);return context;
+}
+export function captionSize(cue,settings=DEFAULT_SETTINGS,time,context=null){
+  // One size per cue for its whole interval; sizes do not pulse during a line.
+  const loud=context?cueLoudness(cue):null;
+  const scale=Number.isFinite(loud)?Math.min(LOUDNESS_MAX,Math.max(LOUDNESS_MIN,1+(loud-context.center)*(loud>context.center?LOUDNESS_UP:LOUDNESS_DOWN))):(cue.scale??1);
+  return Math.round(settings.baseSize*Math.max(.7,1+(scale-1)*settings.effectStrength)*10)/10;
+}
+// Speaker change marks (user-specified 2026-11-17, "/" chosen over "-" the same day): a dialogue line
+// spoken by someone other than the previous labelled line starts with "/ ". Speaker names stay internal.
+// Lines without a speaker neither get a mark nor reset the comparison.
+const turnsCache=new WeakMap();
+export function speakerTurns(doc){
+  const cues=doc?.cues;if(!Array.isArray(cues))return new Set();
+  const cached=turnsCache.get(cues);if(cached&&cached.count===cues.length)return cached.ids;
+  const ids=new Set();let last=null;
+  for(const c of cues.filter(c=>c.kind==='speech').sort((a,b)=>a.start-b.start||a.end-b.end)){
+    if(typeof c.speaker!=='string'||!c.speaker)continue;
+    if(last!==null&&c.speaker!==last)ids.add(c.id);
+    last=c.speaker;
+  }
+  turnsCache.set(cues,{count:cues.length,ids});return ids;
+}
+export const SPEAKER_MARK='/ ';
+export const speakerMark=(doc,cue)=>cue.kind==='speech'&&speakerTurns(doc).has(cue.id)?SPEAKER_MARK:'';
 // Captions of one video are stored under their own key, so a save never rewrites other videos.
 export const captionKey=videoId=>`cc:${videoId}`;
 export function readyDocument(entry,operation={},videoId){
@@ -118,11 +164,11 @@ export function captionText(cue,level='standard'){
   return level==='rich'&&cue.details&&!legacy?`${base} · ${cue.details}`:base;
 }
 export function clockTime(seconds,decimal=false){const t=Math.max(0,Number(seconds)||0),h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=Math.floor(t%60);return `${h?`${h}:`:''}${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}${decimal?'.'+String(Math.floor((t%1)*1000)).padStart(3,'0'):''}`;}
-export function subtitleFile(doc,format){const d=validateDocument(doc);if(format==='json')return JSON.stringify(d,null,2);if(!['srt','vtt'].includes(format))fail('지원하지 않는 내보내기 형식입니다.');const stamp=s=>{const ms=Math.round(s*1000),h=Math.floor(ms/3600000),m=Math.floor(ms%3600000/60000),sec=Math.floor(ms%60000/1000);return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}${format==='srt'?',':'.'}${String(ms%1000).padStart(3,'0')}`;};
+export function subtitleFile(doc,format){const d=validateDocument(doc),turns=speakerTurns(d);if(format==='json')return JSON.stringify(d,null,2);if(!['srt','vtt'].includes(format))fail('지원하지 않는 내보내기 형식입니다.');const stamp=s=>{const ms=Math.round(s*1000),h=Math.floor(ms/3600000),m=Math.floor(ms%3600000/60000),sec=Math.floor(ms%60000/1000);return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}${format==='srt'?',':'.'}${String(ms%1000).padStart(3,'0')}`;};
   // Conventional subtitle players generally show only one event at a time.
   // Flatten overlap boundaries so dialogue and sound descriptions remain together.
   const points=[...new Set(d.cues.flatMap(c=>[Math.round(c.start*1000)/1000,Math.round(c.end*1000)/1000]))].sort((a,b)=>a-b),intervals=[];
-  for(let i=0;i<points.length-1;i++){const a=points[i],b=points[i+1],active=d.cues.filter(c=>c.start<b-.0001&&c.end>a+.0001).sort((x,y)=>(x.kind!=='speech')-(y.kind!=='speech')||x.start-y.start||x.id.localeCompare(y.id));if(!active.length||b<=a)continue;const text=active.map(c=>(c.kind==='speech'?c.text:soundNotation(c.kind,c.text)).replace(/</g,'‹').replace(/>/g,'›').replace(/\r/g,'').replace(/\n\n/g,'\n')).join('\n');const last=intervals.at(-1);if(last&&last.text===text&&Math.abs(last.end-a)<.001)last.end=b;else intervals.push({start:a,end:b,text});}
+  for(let i=0;i<points.length-1;i++){const a=points[i],b=points[i+1],active=d.cues.filter(c=>c.start<b-.0001&&c.end>a+.0001).sort((x,y)=>(x.kind!=='speech')-(y.kind!=='speech')||x.start-y.start||x.id.localeCompare(y.id));if(!active.length||b<=a)continue;const text=active.map(c=>(c.kind==='speech'?(turns.has(c.id)?SPEAKER_MARK:'')+c.text:soundNotation(c.kind,c.text)).replace(/</g,'‹').replace(/>/g,'›').replace(/\r/g,'').replace(/\n\n/g,'\n')).join('\n');const last=intervals.at(-1);if(last&&last.text===text&&Math.abs(last.end-a)<.001)last.end=b;else intervals.push({start:a,end:b,text});}
   return (format==='vtt'?'WEBVTT\n\n':'')+intervals.map((c,i)=>`${i+1}\n${stamp(c.start)} --> ${stamp(c.end)}\n${c.text}\n`).join('\n')+'\n';
 }
 
@@ -141,8 +187,8 @@ export function fitCaptionBox(box,maxHeight){
 // Reuse caption nodes during playback. Quantization avoids needless layout work;
 // every changed fit starts from desired sizes, never from previously shrunk rows.
 const captionLayouts=new WeakMap();
-export function updateCaptionSizes(box,cues,settings,time,responsiveScale,maxHeight,layoutKey=''){
-  const rows=[...box.children],sizes=cues.map(c=>Math.round(captionSize(c,settings,time)*responsiveScale*2)/2);
+export function updateCaptionSizes(box,cues,settings,time,responsiveScale,maxHeight,layoutKey='',context=null){
+  const rows=[...box.children],sizes=cues.map(c=>Math.round(captionSize(c,settings,time,context)*responsiveScale*2)/2);
   const key=`${layoutKey}|${maxHeight}|${sizes.join(',')}`,previous=captionLayouts.get(box);
   if(previous?.key===key&&rows.length===previous.rows.length&&rows.every((row,i)=>row===previous.rows[i]))return false;
   rows.forEach((row,i)=>{if(sizes[i]!==undefined){row.style.setProperty('font-size',`${sizes[i]}px`,'important');row.style.setProperty('--cue-size',`${sizes[i]}px`);row.style.setProperty('--font-size',`${sizes[i]}px`);}});

@@ -22,6 +22,7 @@ import secrets
 import sqlite3
 import struct
 import time
+import urllib.parse
 from typing import Any, Callable
 import uuid
 import wave
@@ -99,15 +100,47 @@ SOUND_PROMPT = (
     "- music: 배경 음악이나 악기 소리를 한국어로 짧게 묘사합니다(악기, 분위기).\n"
     "- sound: 효과음(문 닫힘, 재채기, 박수 등)을 한국어로 짧게 묘사합니다.\n"
     "각 항목에 시작·끝 시각(초, 소수 한 자리)을 붙입니다. 소리가 겹치면 각각 따로 적습니다.\n"
-    'JSON만 출력합니다: {"events":[{"start":0.0,"end":1.0,"kind":"speech|music|sound","text":"..."}]}'
+    # Speaker labels (2026-11-17): only used to mark where the speaker changes. Role-style
+    # names stayed consistent across separately sent 30 s pieces in the eval test; numbers did not.
+    "speech 항목에는 speaker를 붙입니다. 번호 대신 영상 속 역할과 성별을 짧은 한국어로 적습니다"
+    "(예: 조선 손님(남), 가게 주인(여), 내레이션). 말투, 대사 내용, 목소리로 판단합니다.\n"
+    "같은 목소리는 끝까지 같은 이름으로 부릅니다. 확실하지 않으면 '알 수 없음'이라고 적습니다.\n"
+    'JSON만 출력합니다: {"events":[{"start":0.0,"end":1.0,"kind":"speech|music|sound","text":"...","speaker":"..."}]}'
 )
+MAX_KNOWN_SPEAKERS = 8
+SPEAKER_NAME = re.compile(r"[0-9A-Za-z가-힣 ().·,/-]{1,24}")
+
+
+def known_speakers(header: str | None) -> list[str]:
+    """Speaker names an install already received for this video (URI-encoded JSON list). Bad input is ignored."""
+    if not header or len(header) > 2000:
+        return []
+    try:
+        value = json.loads(urllib.parse.unquote(header))
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(value, list):
+        return []
+    names = []
+    for name in value:
+        name = " ".join(name.split()) if isinstance(name, str) else ""
+        if SPEAKER_NAME.fullmatch(name) and name not in names and name != "알 수 없음":
+            names.append(name)
+    return names[:MAX_KNOWN_SPEAKERS]
+
+
+def sound_prompt(known: list[str]) -> str:
+    """The measured prompt, plus the speakers already named for this video so names stay the same."""
+    if not known:
+        return SOUND_PROMPT
+    head, tail = SOUND_PROMPT.rsplit("JSON만", 1)
+    return f"{head}앞부분에서 이미 나온 말하는 사람: {', '.join(known)}. 같은 목소리면 이 이름을 그대로 씁니다.\nJSON만{tail}"
 # HTTP status from Google -> fixed gateway status and code. 429 also covers a spent project budget.
 GEMINI_FAILURES = {400: (502, "sound_bad_request"), 401: (503, "sound_provider_auth"), 403: (503, "sound_provider_auth"),
                    404: (503, "sound_model_unavailable"), 429: (429, "sound_quota")}
 
 
-def sound_events(text: str, duration: float) -> list[dict]:
-    """Music and sound events from a model answer; anything malformed is dropped, speech is ignored."""
+def answer_events(text: str) -> list:
     body = re.sub(r"^```(?:json)?|```$", "", (text or "").strip(), flags=re.M).strip()
     try:
         data = json.loads(body)
@@ -116,8 +149,28 @@ def sound_events(text: str, duration: float) -> list[dict]:
     events = data.get("events") if isinstance(data, dict) else None
     if not isinstance(events, list):
         raise HTTPException(502, "sound_invalid_output")
+    return events[:200]
+
+
+def speech_turns(text: str, duration: float) -> list[dict]:
+    """Who speaks when: start, end and a speaker name per speech event. The spoken words are not returned."""
     out = []
-    for e in events[:200]:
+    for e in answer_events(text):
+        if not isinstance(e, dict) or e.get("kind") != "speech" or not isinstance(e.get("speaker"), str):
+            continue
+        start, end = e.get("start"), e.get("end")
+        if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in (start, end)):
+            continue
+        start, end, name = max(0.0, float(start)), min(duration, float(end)), " ".join(e["speaker"].split())
+        if end - start >= 0.1 and SPEAKER_NAME.fullmatch(name) and name != "알 수 없음":
+            out.append({"start": round(start, 2), "end": round(end, 2), "speaker": name})
+    return out
+
+
+def sound_events(text: str, duration: float) -> list[dict]:
+    """Music and sound events from a model answer; anything malformed is dropped, speech is ignored."""
+    out = []
+    for e in answer_events(text):
         if not isinstance(e, dict) or e.get("kind") not in ("music", "sound") or not isinstance(e.get("text"), str):
             continue
         start, end = e.get("start"), e.get("end")
@@ -905,7 +958,7 @@ class Gateway:
                             "DO UPDATE SET seconds=seconds+excluded.seconds", (day, owner, seconds))
             self.count("sound_seconds", seconds)
 
-    async def describe_sounds(self, payload: bytes, install_id: str | None) -> dict:
+    async def describe_sounds(self, payload: bytes, install_id: str | None, known: list[str] | None = None) -> dict:
         if not self.settings.sounds_enabled:
             raise HTTPException(503, "sounds_disabled")
         duration = wav_duration(payload)
@@ -915,11 +968,11 @@ class Gateway:
         if self.settings.sounds == "mock":
             with self.db:
                 self.count("sound_requests")
-            return {"events": [], "model": "mock", "usage": None, "synthetic": True}
+            return {"events": [], "speech": [], "model": "mock", "usage": None, "synthetic": True}
         model = self.settings.sound_model_name
         body = {"contents": [{"role": "user", "parts": [
                     {"inline_data": {"mime_type": "audio/wav", "data": base64.b64encode(payload).decode()}},
-                    {"text": SOUND_PROMPT}]}],
+                    {"text": sound_prompt(known or [])}]}],
                 # LOW: thinking cannot be switched off on this model, and higher levels shifted times.
                 "generationConfig": {"maxOutputTokens": 8000, "thinkingConfig": {"thinkingLevel": "LOW"}}}
         raw = bytearray()
@@ -948,7 +1001,7 @@ class Gateway:
             raise HTTPException(502, "sound_invalid_output") from None
         if candidate.get("finishReason") not in (None, "STOP"):
             raise HTTPException(502, "sound_truncated" if candidate.get("finishReason") == "MAX_TOKENS" else "sound_refused")
-        events = sound_events(text, duration)
+        events, speech = sound_events(text, duration), speech_turns(text, duration)
         meta = reply.get("usageMetadata") if isinstance(reply.get("usageMetadata"), dict) else {}
         count = lambda name: meta.get(name) if isinstance(meta.get(name), int) and meta.get(name) >= 0 else 0
         usage = {"input_tokens": count("promptTokenCount"), "output_tokens": count("candidatesTokenCount") + count("thoughtsTokenCount")}
@@ -957,7 +1010,7 @@ class Gateway:
             self.count("sound_input_tokens", usage["input_tokens"])
             self.count("sound_output_tokens", usage["output_tokens"])
         answered = reply.get("modelVersion")
-        return {"events": events, "usage": usage,
+        return {"events": events, "speech": speech, "usage": usage,
                 "model": answered if isinstance(answered, str) and re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", answered) else model}
 
     def cancel(self, job_id: str, install_id: str | None = None) -> dict:
@@ -1042,7 +1095,7 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(UploadLimitMiddleware)
     app.add_middleware(CORSMiddleware, allow_origin_regex=EXTENSION_ORIGIN, allow_methods=["GET", "POST", "DELETE"],
-                       allow_headers=["Authorization", "Idempotency-Key", "Content-Type", "X-OnSori-Consent"], max_age=600)
+                       allow_headers=["Authorization", "Idempotency-Key", "Content-Type", "X-OnSori-Consent", "X-OnSori-Speakers"], max_age=600)
 
     def authenticate(request: Request, *, metrics: bool = False) -> Gateway:
         gateway = request.app.state.gateway
@@ -1168,7 +1221,7 @@ def create_app(settings: Settings | None = None, *, transport: httpx.AsyncBaseTr
         body = await request.body()
         if len(body) > MAX_SOUND_BODY:
             raise HTTPException(413, "sound_too_large")
-        return await gateway.describe_sounds(body, install)
+        return await gateway.describe_sounds(body, install, known_speakers(request.headers.get("x-onsori-speakers")))
 
     @app.get("/v1/jobs/{job_id}")
     async def get_job(job_id: str, request: Request):

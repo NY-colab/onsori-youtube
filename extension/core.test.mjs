@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {validateDocument,parseDocument,youtubeId,readyDocument,captionKey,activeCues,captionSize,trimVolumeProfile,updateCaptionSizes,captionText,soundNotation,subtitleFile,normalizeSettings,DEFAULT_SETTINGS} from './core.js';
+import {validateDocument,parseDocument,youtubeId,readyDocument,captionKey,activeCues,captionSize,cueLoudness,loudnessContext,speakerTurns,speakerMark,trimVolumeProfile,updateCaptionSizes,captionText,soundNotation,subtitleFile,normalizeSettings,DEFAULT_SETTINGS} from './core.js';
 const cue=(patch={})=>({id:'speech-1',start:0,end:4,text:'안녕하세요.',kind:'speech',dbfs:-20,relative_db:0,scale:1,confidence:.9,source:'test',review_required:true,...patch});
 const doc=(cues=[cue()],patch={})=>({schema_version:'1.0',video_id:'abcdefghijk',title:'검증 자막',duration:10,cues,warnings:[],metadata:{},...patch});
 test('normalizes and sorts without accepting invalid times or text',()=>{
@@ -182,4 +182,48 @@ test('가치봄식 소리 표기: effects ♪…♪, background music ♬…♬,
   assert.equal(soundNotation('speech','♪ 노래 가사 ♪'),'♪ 노래 가사 ♪');
   assert.equal(captionText(cue({kind:'music',text:'♬ 피아노 연주 ♬',details:'잔잔함'}),'rich'),'♬ 피아노 연주 ♬ · 잔잔함');
   assert.match(subtitleFile(doc([cue({id:'m',kind:'music',start:0,end:2,text:'♪ 배경 음악이 이어짐'})]),'srt'),/♬ 배경 음악이 이어짐 ♬/);
+});
+test('caption size follows the loud part of a line against the video typical dialogue',()=>{
+  // Reference -22 dBFS: a cue's relative_db is its whole-line level above it.
+  const line=(id,levels,kind='speech')=>{const points=levels.map((dbfs,i)=>({time:i*.1,scale:1,dbfs}));points.push({...points.at(-1),time:levels.length*.1});const mean=10*Math.log10(levels.reduce((s,v)=>s+10**(v/10),0)/levels.length);return cue({id,kind,start:0,end:levels.length*.1,dbfs:mean,relative_db:mean+22,volume_profile:points});};
+  // A shout inside a line with pauses: whole-line average stays low, the loud part does not.
+  const shout=line('shout',[-70,-70,-30,-30,-14,-14,-14,-14]);
+  assert.ok(Math.abs(cueLoudness(shout)-8)<1e-9);
+  assert.ok(cueLoudness(shout)>shout.relative_db);
+  const normal=['a','b','c'].map(id=>line(id,[-20,-20,-20,-20]));
+  const d={cues:[...normal,shout,line('m',[-30,-30,-30,-30],'music')]};
+  const context=loudnessContext(d);assert.equal(context.center,2);
+  assert.equal(loudnessContext(d),context);
+  assert.equal(captionSize(normal[0],DEFAULT_SETTINGS,0,context),14);
+  // +6 dB over typical dialogue: 1 + 6/12 = 1.5x; quieter lines shrink by 1/20 per dB down to 0.8x.
+  assert.equal(captionSize(shout,DEFAULT_SETTINGS,0,context),21);
+  assert.equal(captionSize(d.cues.at(-1),DEFAULT_SETTINGS,0,context),11.2);
+  assert.equal(captionSize(line('q',[-22,-22,-22,-22]),DEFAULT_SETTINGS,0,context),12.6);
+  assert.equal(captionSize(line('x',[0,0,0,0]),DEFAULT_SETTINGS,0,context),22.4);
+  // Effect strength scales the difference; 0 keeps every line at the chosen size.
+  assert.equal(captionSize(shout,{...DEFAULT_SETTINGS,effectStrength:0},0,context),14);
+  assert.equal(captionSize(shout,{...DEFAULT_SETTINGS,effectStrength:.5},0,context),17.5);
+  assert.equal(captionSize(shout,normalizeSettings({effectStrength:2}),0,context),28);
+  assert.equal(captionSize(d.cues.at(-1),normalizeSettings({effectStrength:2}),0,context),9.8);
+  assert.equal(normalizeSettings({effectStrength:1.5}).effectStrength,1.5);
+  assert.equal(normalizeSettings({effectStrength:3}).effectStrength,1);
+  // Without a loudness context (or loudness data) the stored analyzer scale is used as before.
+  assert.equal(captionSize(shout),Math.round(14*shout.scale*10)/10);
+  assert.equal(captionSize(cue({dbfs:null,relative_db:null,scale:1.2}),DEFAULT_SETTINGS,0,context),16.8);
+  assert.equal(loudnessContext({}),null);
+  assert.equal(loudnessContext({cues:[]}).center,0);
+});
+test('a dialogue line starts with "/ " only when someone other than the previous speaker says it',()=>{
+  const line=(id,start,speaker)=>cue({id,start,end:start+1,text:`대사 ${id}`,...(speaker?{speaker}:{})});
+  const d=doc([line('a',0,'주인'),line('b',2,'주인'),line('c',4,'손님'),line('d',6),line('e',8,'손님'),line('f',10,'주인'),cue({id:'m',kind:'music',start:4,end:9,text:'♬ 피아노 연주 ♬',speaker:'주인'})],{duration:20});
+  const checked=validateDocument(d);
+  assert.equal(checked.cues.find(c=>c.id==='c').speaker,'손님');assert.equal(checked.cues.find(c=>c.id==='m').speaker,undefined);
+  assert.deepEqual([...speakerTurns(checked)].sort(),['c','f']);
+  assert.equal(speakerMark(checked,checked.cues.find(c=>c.id==='c')),'/ ');
+  assert.equal(speakerMark(checked,checked.cues.find(c=>c.id==='a')),'');
+  assert.equal(speakerMark(checked,checked.cues.find(c=>c.id==='d')),'');
+  const srt=subtitleFile(checked,'srt');
+  assert.ok(srt.includes('\n/ 대사 c\n'));assert.ok(!srt.includes('- 대사'));assert.match(srt,/\n대사 a\n/);assert.doesNotMatch(srt,/손님|주인/);
+  assert.throws(()=>validateDocument(doc([line('x',0,'가'.repeat(41))])));
+  assert.equal(speakerTurns({}).size,0);
 });

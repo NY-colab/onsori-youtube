@@ -63,3 +63,32 @@ test('once the Gemini budget is spent, later minutes keep the on-device result w
     if(originalWorker)Object.defineProperty(globalThis,'Worker',originalWorker);else delete globalThis.Worker;
   }
 });
+
+test('speaker turns: known names go up, who-speaks-when comes back, lines take the overlapping speaker',async()=>{
+  const calls=[],cloud={key:async()=>'osi_key',allowSynthetic:false};
+  const fetchImpl=async(url,init)=>{calls.push(init.headers);
+    return new Response(JSON.stringify({model:'gemini-4-hydrogen',events:[],speech:[{start:0,end:2,speaker:'가게 주인(남)'},{start:2.5,end:4,speaker:' 조선  손님(여) '},{start:5,end:4,speaker:'거꾸로'},{start:6,end:7,speaker:''}]}),{status:200});};
+  const pcm=new Float32Array(30*SR);
+  const result=await describeSoundsInCloud(pcm,{from:0,to:30,cloud,fetchImpl,speakers:['가게 주인(남)']});
+  assert.deepEqual(JSON.parse(decodeURIComponent(calls[0]['X-OnSori-Speakers'])),['가게 주인(남)']);
+  assert.deepEqual(result.speech,[{start:0,end:2,speaker:'가게 주인(남)'},{start:2.5,end:4,speaker:'조선 손님(여)'}]);
+  await describeSoundsInCloud(pcm,{from:0,to:30,cloud,fetchImpl});assert.equal(calls[1]['X-OnSori-Speakers'],undefined);
+  const old=async()=>new Response(JSON.stringify({events:[]}),{status:200});
+  assert.deepEqual((await describeSoundsInCloud(pcm,{from:0,to:30,cloud,fetchImpl:old})).speech,[]);
+  const lines=[{start:10,end:12,text:'어서 오세요'},{start:12.5,end:14,text:'이건 무엇이오'},{start:14.2,end:14.5,text:'네'},{start:20,end:22,text:'혼잣말'}];
+  const doc=assembleDocument({pcm:new Float32Array(30*SR).fill(.1),asr:null,windows:[],videoId:'abcdefghijk',startTime:0,options:{},captions:{kind:'auto',lines},
+    cloudSpeakers:[{start:10.1,end:12,speaker:'가게 주인(남)'},{start:12.4,end:14.1,speaker:'조선 손님(여)'},{start:21.9,end:22.5,speaker:'조선 손님(여)'}]});
+  assert.deepEqual(doc.cues.filter(c=>c.kind==='speech').map(c=>c.speaker??null),['가게 주인(남)','조선 손님(여)',null,null]);
+});
+
+test('with no names known yet, the first piece goes alone and the others carry its names',async()=>{
+  const order=[],cloud={key:async()=>'osi_key',allowSynthetic:false};let pending=0,maxPending=0;
+  const fetchImpl=async(url,init)=>{pending++;maxPending=Math.max(maxPending,pending);const sent=init.headers['X-OnSori-Speakers'];order.push(sent?JSON.parse(decodeURIComponent(sent)):[]);
+    await new Promise(r=>setTimeout(r,5));pending--;return new Response(JSON.stringify({events:[],speech:[{start:1,end:2,speaker:'가게 주인(남)'}]}),{status:200});};
+  const pcm=new Float32Array(90*SR);
+  await describeSoundsInCloud(pcm,{from:0,to:90,cloud,fetchImpl});
+  assert.deepEqual(order,[[],['가게 주인(남)'],['가게 주인(남)']]);assert.equal(maxPending,2);
+  order.length=0;maxPending=0;
+  await describeSoundsInCloud(pcm,{from:0,to:90,cloud,fetchImpl,speakers:['조선 손님(여)']});
+  assert.deepEqual(order,[['조선 손님(여)'],['조선 손님(여)'],['조선 손님(여)']]);assert.equal(maxPending,3);
+});

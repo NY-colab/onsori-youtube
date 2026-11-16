@@ -52,7 +52,7 @@ function renderCorrection(value={}){
   $('aiCorrectionSettings').textContent=ready?'설정':'연결 방법';
   $('aiCorrectionState').textContent=!ready?'온소리 서버와 이 PC의 Claude Code에 연결하지 못해 지금은 보정하지 않습니다.':on?`켜짐 · ${cli?'이 PC의 Claude Code로 자동 보정합니다':correctionInfo.provider==='cloud'?`온소리 서버를 거쳐 자동 보정합니다(${correctionInfo.label||'AI 모델'})`:'Anthropic API로 보정합니다'}. 인식한 대사 글자만 보내고 소리는 보내지 않습니다.`:'꺼짐 · 켜면 이후 분석하는 대사부터 오타를 고칩니다.';
 }
-function strengthLabel(){$('strengthValue').textContent=({'0':'고정','0.5':'부드럽게','1':'강하게'})[$('effectStrength').value];}
+function strengthLabel(){$('strengthValue').textContent=({'0':'고정','0.5':'약하게','1':'보통','1.5':'강하게','2':'아주 강하게'})[$('effectStrength').value];}
 function analysisOptions(){return {language:$('language').value,music_detail:$('musicDetail').checked,capture_frames:$('captureFrames').checked};}
 async function action(type){feedback('');pending=true;renderOperation(operation);try{await send({type,options:analysisOptions()});}catch(e){feedback(e.message);}finally{pending=false;await refresh();}}
 function fieldSettings(){const settings={typographyVersion:2,fontFamily:chosenFont()};for(const key of fields){const el=$(key);settings[key]=el.type==='checkbox'?el.checked:el.value;}return normalizeSettings(settings);}

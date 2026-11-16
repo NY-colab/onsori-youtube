@@ -296,7 +296,8 @@ export async function analyzeFullStreaming({blob,videoId,title='',expectedDurati
       const last=chunk.end>=duration-.01,owned=captionLines.filter(l=>{const mid=(l.start+l.end)/2;return mid>=chunk.start&&(mid<chunk.end||last);});
       const from=Math.max(0,Math.min(chunk.start-STREAM.pad,...owned.map(l=>l.start))),to=Math.min(duration,Math.max(chunk.end+STREAM.pad,...owned.map(l=>l.end))),slice=pcm.subarray(Math.round(from*SR),Math.round(to*SR));
       report(0,'소리 분석 시작');
-      const soundTask=soundsOn?describeSoundsInCloud(pcm,{from:chunk.start,to:chunk.end,cloud,signal}).then(value=>({value}),error=>({error})):null;
+      const speakers=[...new Set(cues.filter(c=>c.kind==='speech'&&c.speaker).map(c=>c.speaker))].slice(-8);
+      const soundTask=soundsOn?describeSoundsInCloud(pcm,{from:chunk.start,to:chunk.end,cloud,signal,speakers}).then(value=>({value}),error=>({error})):null;
       let result;
       if(cloudOn){
         result=await withCloudSpeech(slice,{videoId,title,options,cloud,onProgress:fromModel,signal,run});
@@ -307,15 +308,15 @@ export async function analyzeFullStreaming({blob,videoId,title='',expectedDurati
         warn(captions.kind==='auto'?'대사는 YouTube 자동 자막을 가져왔고, 음악·효과음과 글자 크기는 이 기기에서 분석했습니다.':'대사는 영상에 등록된 자막을 가져왔고, 음악·효과음과 글자 크기는 이 기기에서 분석했습니다.');
       }else result=await run(slice,options,fromModel,signal);
       check(signal);
-      let cloudSounds=null;
+      let cloudSounds=null,cloudSpeakers=null;
       if(soundTask){
         const answer=await soundTask;check(signal);
-        if(answer.value){cloudSounds=answer.value.events;warn('음악 설명과 효과음 이름은 온소리 서버를 거쳐 Google Gemini 4 Hydrogen이 붙였습니다.');}
+        if(answer.value){cloudSounds=answer.value.events;cloudSpeakers=answer.value.speech||null;warn('음악 설명과 효과음 이름은 온소리 서버를 거쳐 Google Gemini 4 Hydrogen이 붙였습니다.');}
         else if(answer.error?.name==='AbortError')throw answer.error;
         else if(SOUND_STOP_CODES.includes(answer.error?.code)){soundsOn=false;warn(`${answer.error.message} 이후 구간의 음악·효과음은 이 기기에서 분석했습니다.`);}
         else warn(`${label} 구간의 음악·효과음은 서버 분석을 받지 못해 이 기기에서 분석했습니다.`);
       }
-      const part=ownChunk(assembleDocument({pcm:slice,asr:captionLines.length?null:result.asr,windows:result.windows,runtime:result.runtime,videoId,title,startTime:from,options,reference,captions:captionLines.length?{kind:captions.kind,lines:owned}:null,cloudSounds}),chunk,duration);
+      const part=ownChunk(assembleDocument({pcm:slice,asr:captionLines.length?null:result.asr,windows:result.windows,runtime:result.runtime,videoId,title,startTime:from,options,reference,captions:captionLines.length?{kind:captions.kind,lines:owned}:null,cloudSounds,cloudSpeakers}),chunk,duration);
       if(options.use_caption_references!==false&&!captionLines.length){applyReferences(part,references,'native');const r=part.metadata.speech_reference;speechReference={method:r.method,available:r.available,corrected:(speechReference?.corrected||0)+r.corrected};}
       if(correctionOn){
         const context=cues.filter(c=>c.kind==='speech'&&c.start<chunk.start).slice(-AI_CORRECTION.contextLines).map(c=>c.text);

@@ -25,9 +25,10 @@ export function soundPieces(start,end,size=SOUND_PIECE_SECONDS){
 }
 
 // One piece -> music/sound events in the piece's own time (0 = piece start).
-async function describePiece(pcm,{cloud,signal,fetchImpl}){
+async function describePiece(pcm,{cloud,signal,fetchImpl,speakers=[]}){
+  const known=speakers.length?{'X-OnSori-Speakers':encodeURIComponent(JSON.stringify(speakers.slice(0,8)))}:{};
   const request=async token=>{
-    try{return await fetchImpl(`${CLOUD.origin}/v1/sounds`,{method:'POST',body:new Blob([encodeWav(pcm)],{type:'audio/wav'}),headers:{Authorization:`Bearer ${token}`,'Content-Type':'audio/wav','X-OnSori-Consent':'sounds'},credentials:'omit',cache:'no-store',redirect:'error',signal});}
+    try{return await fetchImpl(`${CLOUD.origin}/v1/sounds`,{method:'POST',body:new Blob([encodeWav(pcm)],{type:'audio/wav'}),headers:{Authorization:`Bearer ${token}`,'Content-Type':'audio/wav','X-OnSori-Consent':'sounds',...known},credentials:'omit',cache:'no-store',redirect:'error',signal});}
     catch(e){if(signal?.aborted)throw abortError();throw fail('network','온소리 서버에 연결하지 못했습니다.');}
   };
   let token=await cloud.key(false);if(!token)throw fail('no_key','클라우드 사용 열쇠를 받지 못했습니다.');
@@ -37,16 +38,27 @@ async function describePiece(pcm,{cloud,signal,fetchImpl}){
   if(!response.ok)throw fail(typeof body?.detail==='string'?body.detail:`http_${response.status}`);
   if(body?.synthetic===true&&cloud.allowSynthetic!==true)throw fail('synthetic_result','서버가 시험용 결과만 돌려주고 있습니다.');
   const duration=pcm.length/SR,events=Array.isArray(body?.events)?body.events:null;if(!events)throw fail('invalid_result');
-  return {model:typeof body.model==='string'?body.model.slice(0,100):null,events:events.flatMap(e=>{
+  // Who speaks when (no words): used only to mark where the speaker changes. Older servers send none.
+  const speech=(Array.isArray(body?.speech)?body.speech:[]).flatMap(e=>{
+    const start=Number(e?.start),end=Number(e?.end),speaker=String(e?.speaker??'').replace(/\s+/g,' ').trim().slice(0,40);
+    return Number.isFinite(start)&&Number.isFinite(end)&&start>=0&&end>start&&start<duration&&speaker?[{start,end:Math.min(end,duration),speaker}]:[];
+  });
+  return {model:typeof body.model==='string'?body.model.slice(0,100):null,speech,events:events.flatMap(e=>{
     const start=Number(e?.start),end=Number(e?.end),text=String(e?.text??'').replace(/\s+/g,' ').trim().slice(0,80);
     return ['music','sound'].includes(e?.kind)&&Number.isFinite(start)&&Number.isFinite(end)&&start>=0&&end>start&&start<duration&&text?[{start,end:Math.min(end,duration),kind:e.kind,text}]:[];
   })};
 }
 
 // [from,to) of pcm (whose first sample is at absolute time `offset`) -> absolute-time events.
-// Pieces are sent in parallel; any failure rejects with a CloudSoundError.
-export async function describeSoundsInCloud(pcm,{from,to,offset=0,cloud,signal,fetchImpl=fetch}){
+// Pieces are sent in parallel; any failure rejects with a CloudSoundError. While no speaker names
+// are known yet (the video's first analyzed minute), the first piece goes alone and the others carry
+// its names, so parallel pieces do not name the same person differently.
+export async function describeSoundsInCloud(pcm,{from,to,offset=0,cloud,signal,fetchImpl=fetch,speakers=[]}){
   const pieces=soundPieces(from,to);
-  const results=await Promise.all(pieces.map(([a,b])=>describePiece(pcm.subarray(Math.round((a-offset)*SR),Math.round((b-offset)*SR)),{cloud,signal,fetchImpl}).then(r=>({...r,at:a}))));
-  return {model:results.find(r=>r.model)?.model||null,events:results.flatMap(r=>r.events.map(e=>({...e,start:Math.round((e.start+r.at)*1000)/1000,end:Math.round((e.end+r.at)*1000)/1000})))};
+  const send=([a,b],names)=>describePiece(pcm.subarray(Math.round((a-offset)*SR),Math.round((b-offset)*SR)),{cloud,signal,fetchImpl,speakers:names}).then(r=>({...r,at:a}));
+  let results;
+  if(speakers.length||pieces.length<2)results=await Promise.all(pieces.map(p=>send(p,speakers)));
+  else{const first=await send(pieces[0],[]),names=[...new Set(first.speech.map(e=>e.speaker))].slice(0,8);results=[first,...await Promise.all(pieces.slice(1).map(p=>send(p,names)))];}
+  const shift=(e,r)=>({...e,start:Math.round((e.start+r.at)*1000)/1000,end:Math.round((e.end+r.at)*1000)/1000});
+  return {model:results.find(r=>r.model)?.model||null,speech:results.flatMap(r=>r.speech.map(e=>shift(e,r))),events:results.flatMap(r=>r.events.map(e=>({...e,start:Math.round((e.start+r.at)*1000)/1000,end:Math.round((e.end+r.at)*1000)/1000})))};
 }
