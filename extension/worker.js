@@ -233,6 +233,9 @@ async function autoStart(message,sender){
   if(doc?.metadata.analysis_scope==='full-video'&&!partial)return {ok:true,cached:true};
   // A user cancel or a failure stops automatic analysis; a reload or navigation only pauses it.
   if(entry.cancelled||entry.failed||(entry.fullAttempted&&!partial&&!entry.interrupted))return {ok:true,skipped:true};
+  // Automatic analysis waits for the cloud choice; otherwise it would quietly analyze on the device and save that result.
+  const cloud=await cloudState().catch(()=>({offered:false}));
+  if(cloud.offered&&cloud.consent==null)return {ok:true,skipped:true,awaitingCloudChoice:true};
   return startFull(data.analysisOptions,{tab},true);
 }
 const consentSender=sender=>{if(sender.id===chrome.runtime.id&&sender.frameId===0&&sender.tab&&youtubeId(sender.url))return true;try{const u=new URL(sender.url);return u.origin===new URL(chrome.runtime.getURL('popup.html')).origin&&u.protocol==='chrome-extension:'&&u.host===new URL(chrome.runtime.getURL('popup.html')).host&&u.pathname==='/popup.html';}catch{return false;}};
@@ -267,7 +270,7 @@ async function handle(message,sender){const handleEpoch=operationEpoch;switch(me
   case 'OPEN_AI_SETTINGS':await chrome.tabs.create({url:chrome.runtime.getURL('ai-settings.html')});return {ok:true};
   case 'TOOLBAR_OPEN':{if(!toolbarSender(sender))throw new Error('도구 모음에서 온소리 아이콘을 직접 눌러 주세요.');const tab=await activeTab(),key=`${tab.id}:${youtubeId(tab.url)}`,{autoHistory={}}=await chrome.storage.local.get('autoHistory');await grant(tab);if(autoHistory[key]?.permissionRequired)await rememberAuto(key,{permissionRequired:false,windows:[]});return autoStart(message,sender);}
   case 'ENABLE_LOCAL':{if(!consentSender(sender))throw new Error('온소리 패널에서 사용 설정해 주세요.');const tab=await requestTab(sender);await chrome.storage.local.set({localConsent:{enabled:true,version:2,enabledAt:Date.now()},analysisOptions:analysisOptions(message.options)});if(toolbarSender(sender))await grant(tab);return autoStart(message,sender);}
-  case 'SET_CLOUD_CONSENT':{if(!consentSender(sender))throw new Error('온소리 패널에서 선택해 주세요.');if(!['granted','declined'].includes(message.choice))throw new Error('클라우드 사용 선택이 올바르지 않습니다.');await chrome.storage.local.set({cloudConsent:{choice:message.choice,version:CLOUD.consentVersion,at:Date.now()}});return {ok:true,cloud:await cloudState()};}
+  case 'SET_CLOUD_CONSENT':{if(!consentSender(sender))throw new Error('온소리 패널에서 선택해 주세요.');if(!['granted','declined'].includes(message.choice))throw new Error('클라우드 사용 선택이 올바르지 않습니다.');await chrome.storage.local.set({cloudConsent:{choice:message.choice,version:CLOUD.consentVersion,at:Date.now()}});if(sender.tab)autoStart({},sender).catch(()=>{});return {ok:true,cloud:await cloudState()};}
   case 'CLOUD_KEY':return {ok:true,key:await cloudKey(message.renew===true)};
   case 'SET_SETTINGS':{const settings=normalizeSettings(message.settings);await chrome.storage.local.set({settings});const op=await state();if(!settings.autoAnalyze&&op.automatic&&busyPhases.includes(op.phase))await cancel('자동 분석을 꺼서 진행 중인 분석을 취소했습니다. 분석해 둔 구간은 남아 있습니다.');return {ok:true,settings};}
   case 'SET_ANALYSIS_OPTIONS':{const options=analysisOptions(message.options);await chrome.storage.local.set({analysisOptions:options});return {ok:true,options};}

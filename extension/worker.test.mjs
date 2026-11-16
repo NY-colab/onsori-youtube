@@ -191,6 +191,26 @@ test('a server with only music/effect analysis is offered, and consent from befo
   assert.equal(JSON.stringify(h.messages.find(m=>m.type==='FULL_ANALYZE').cloud),JSON.stringify({enabled:true,speech:false,sounds:true,allowSynthetic:false}));
 });
 
+test('automatic analysis waits for the cloud choice, and the choice in the YouTube panel starts it',async()=>{
+  const panel={id:'test',frameId:0,url:'https://www.youtube.com/watch?v=abcdefghijk',...video};
+  const settle=()=>new Promise(r=>setTimeout(r,30));
+  for(const choice of ['granted','declined']){
+    const h=await harness({storage:{localConsent:{enabled:true}},cloudFetch:cloudServer({available:false,sounds:true})});
+    const waiting=await h.send({type:'AUTO_START'},video);
+    assert.equal(waiting.awaitingCloudChoice,true);assert.equal(h.messages.some(m=>m.type==='FULL_ANALYZE'),false);
+    assert.equal(h.storage.autoHistory?.['7:abcdefghijk']?.fullAttempted,undefined,'waiting is not an attempt');
+    assert.equal((await h.send({type:'SET_CLOUD_CONSENT',choice},panel)).ok,true);await settle();
+    const runs=h.messages.filter(m=>m.type==='FULL_ANALYZE');
+    assert.equal(runs.length,1,choice);assert.equal(runs[0].cloud.enabled,choice==='granted');
+  }
+  // With no cloud offer, or a choice already made, automatic analysis starts at once.
+  for(const config of [{},{storage:{localConsent:{enabled:true},cloudConsent:{choice:'declined',version:CLOUD.consentVersion}},cloudFetch:cloudServer({available:false,sounds:true})}]){
+    const h=await harness({storage:{localConsent:{enabled:true}},...config});
+    assert.equal((await h.send({type:'AUTO_START'},video)).awaitingCloudChoice,undefined);
+    assert.equal(h.messages.filter(m=>m.type==='FULL_ANALYZE').length,1);
+  }
+});
+
 test('install keys are issued once, renewed on request and given only to the active analysis document',async()=>{
   const issue=[],h=await harness({storage:{localConsent:{enabled:true},cloudConsent:{choice:'granted',version:CLOUD.consentVersion}},cloudFetch:cloudServer({issue})});
   await h.send({type:'ANALYZE_URL'});const captureId=h.storage.operation.captureId;
