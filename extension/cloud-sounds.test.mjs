@@ -92,3 +92,14 @@ test('with no names known yet, the first piece goes alone and the others carry i
   await describeSoundsInCloud(pcm,{from:0,to:90,cloud,fetchImpl,speakers:['조선 손님(여)']});
   assert.deepEqual(order,[['조선 손님(여)'],['조선 손님(여)'],['조선 손님(여)']]);assert.equal(maxPending,3);
 });
+
+test('breaking and crashing sounds have caption names (added 2026-11-25)',()=>{
+  const pcm=new Float32Array(10*SR).fill(.1);
+  for(const [label,word] of [['Smash, crash','와장창!'],['Breaking','와장창'],['Crack','쩍'],['Clatter','덜그럭'],['Clang','깡!'],['Chink, clink','쨍']]){
+    const doc=assembleDocument({pcm,asr:null,windows:[{start:4,end:6,labels:[{label,score:.4},{label:'Speech',score:.01}]}],videoId:'abcdefghijk',options:{}});
+    const sound=doc.cues.filter(c=>c.kind==='sound');
+    assert.equal(sound.length,1,label);assert.ok(sound[0].text.includes(word),`${label}: ${sound[0].text}`);
+  }
+  const quiet=assembleDocument({pcm,asr:null,windows:[{start:4,end:6,labels:[{label:'Breaking',score:.2},{label:'Speech',score:.01}]}],videoId:'abcdefghijk',options:{}});
+  assert.equal(quiet.cues.filter(c=>c.kind==='sound').length,0);
+});
