@@ -1,6 +1,7 @@
 import {analyzeRecording,analyzeFullStreaming} from './browser-engine.js';
 import {createCliClient} from './ai-correction.js';
-import {acquireAudio} from './direct-audio.js';
+import {acquireAudio,downloadAudio} from './direct-audio.js';
+import {createScreenReader} from './screen-reader.js';
 import {captionUrl,boundedDownload,parseCaptionReferences,captionWords,captionLines,FULL_LIMITS} from './full-source.js';
 let current;
 async function send(session,message){if(current!==session||session.discarded)return null;try{return await chrome.runtime.sendMessage({...message,captureId:session.captureId});}catch{return null;}}
@@ -113,7 +114,7 @@ async function analyzeFull(message){
     let references=[],captions=null,captionError=null;
     if(message.options?.use_caption_references!==false&&captionUrl(source.track?.url,source.videoId)){
       try{
-        const data=await boundedDownload(source.track.url,{signal,maxBytes:2*1024*1024}),json=JSON.parse(await data.text());
+        const data=await boundedDownload(source.track.url,{signal,maxBytes:2*1024*1024,what:'자막을'}),json=JSON.parse(await data.text());
         // The player's own caption request (attested) gives the whole text up front: its lines
         // become the speech captions and Whisper is skipped. Otherwise captions only correct Whisper.
         if(source.track.attested){const {words,tags}=captionWords(json,source.duration),lines=captionLines(words);if(lines.length)captions={kind:source.track.kind==='asr'?'auto':'track',language:source.track.language||null,lines,tags};}
@@ -122,14 +123,29 @@ async function analyzeFull(message){
       }catch(e){if(signal.aborted)throw e;captionError=String(e?.message||e);}
     }
     const reasons={'no-track':'이 영상에는 한국어 자막이 없습니다.','not-playing':'영상이 재생되기 전이라 YouTube 자동 자막을 받지 못했습니다.','no-request':'YouTube가 자막을 보내지 않았습니다.'};
-    const notices=message.options?.use_caption_references!==false&&!captions?[`${source.track?.attested&&captionError?`YouTube 자동 자막을 내려받지 못했습니다 (${captionError.slice(0,80)}).`:reasons[source.captionStatus]||'YouTube 자동 자막을 받지 못했습니다.'} 대사는 이 기기에서 음성 인식으로 만들었습니다.`]:[];
+    let notices=message.options?.use_caption_references!==false&&!captions?[`${source.track?.attested&&captionError?`YouTube 자동 자막을 내려받지 못했습니다 (${captionError.slice(0,80)}).`:reasons[source.captionStatus]||'YouTube 자동 자막을 받지 못했습니다.'} 대사는 이 기기에서 음성 인식으로 만들었습니다.`]:[];
+    // Burned-in subtitles (user request 2026-11-24): when the picture carries the dialogue as text,
+    // those lines are the speech captions. An uploaded subtitle track is still preferred.
+    let screen=null,screenInfo={status:message.options?.read_screen===false?'off':captions?.kind==='track'?'track-preferred':'no-video'};
+    if(message.options?.read_screen!==false&&captions?.kind!=='track'){
+      try{
+        let video=source.video;
+        if(!video){const result=await send(session,{type:'FULL_AUDIO_LOOKUP',language:message.options?.language});video=result?.ok?result.source?.video:null;}
+        if(video){
+          const frames=await downloadAudio(video,{signal,onProgress:(bytes,total)=>report({message:`화면 자막을 읽을 영상 받는 중 · ${(bytes/1048576).toFixed(1)} MB${total?' / '+(total/1048576).toFixed(1)+' MB':''}`})});
+          const reader=await createScreenReader(frames,{duration:source.duration,signal,onProgress:text=>report({message:text})});
+          const probe=await reader.probe();screenInfo={status:probe.subtitled?'used':'not-subtitled',...probe};
+          if(probe.subtitled){screen=reader;session.screen=reader;notices=[];}else await reader.close();
+        }
+      }catch(e){if(signal.aborted)throw e;screenInfo={status:'error',error:String(e?.message||e).slice(0,120)};notices=[...notices,`화면 자막을 읽지 못했습니다 (${String(e?.message||e).slice(0,80)}).`];}
+    }
     if(current!==session||signal.aborted)return;
     // Install keys live in the service worker; this document only asks for one while analyzing.
     const cloud=message.cloud?.enabled===true?{enabled:true,speech:message.cloud.speech!==false,sounds:message.cloud.sounds===true,allowSynthetic:message.cloud.allowSynthetic===true,key:async renew=>(await send(session,{type:'CLOUD_KEY',renew}))?.key||null}:null;
     const transport=source.transport||'page-direct';
     // Minutes are analyzed from the playhead onward; each finished minute is saved and shown at once.
     const position=async()=>{const state=await send(session,{type:'PLAYBACK_POSITION'});return Number.isFinite(state?.time)?state.time:null;};
-    const document=await analyzeFullStreaming({blob,videoId:source.videoId,title:source.title,expectedDuration:source.duration,options:{...message.options,capture_frames:false},references,captions,notices,cloud,correction:correctionConfig(message.correction,session),resume:message.resume||null,position,signal,
+    const document=await analyzeFullStreaming({blob,videoId:source.videoId,title:source.title,expectedDuration:source.duration,options:{...message.options,capture_frames:false},references,captions,screen,screenInfo,notices,cloud,correction:correctionConfig(message.correction,session),resume:message.resume||null,position,signal,
       onProgress:update=>report({...update,progress:.05+.95*update.progress}),
       onChunk:async(doc,{remaining})=>{
         if(!remaining||current!==session||signal.aborted)return;
@@ -141,7 +157,7 @@ async function analyzeFull(message){
     document.metadata.audio_transport=transport;
     const result=await send(session,{type:'ANALYSIS_COMPLETE',document});if(!result?.ok)throw new Error(result?.error||'전체 자막을 저장하지 못했습니다.');session.completed=true;
   }catch(e){if(current===session&&!session.discarded)await fail(session,e.message||'전체 분석을 완료하지 못했습니다. 다른 방법에서 탭 녹음을 선택해 주세요.');}
-  finally{clearInterval(session.keepaliveTimer);session.analyzing=false;session.controller=null;}
+  finally{clearInterval(session.keepaliveTimer);session.analyzing=false;session.controller=null;const reader=session.screen;session.screen=null;await reader?.close();}
 }
 chrome.runtime.onMessage.addListener((message,sender,respond)=>{
   if(message.target!=='offscreen')return;

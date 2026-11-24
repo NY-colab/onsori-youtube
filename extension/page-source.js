@@ -64,7 +64,7 @@
     const details=response?.videoDetails;
     const data=details?.videoId===m.videoId?{
       videoId:details.videoId,title:String(details.title||'').slice(0,300),duration:Number(details.lengthSeconds),live:details.isLiveContent===true,
-      formats:responses.flatMap(r=>[...(r.streamingData?.adaptiveFormats||[]),...(r.streamingData?.formats||[])].slice(0,100)).map(f=>({url:f.url,mimeType:f.mimeType,bitrate:f.bitrate,contentLength:f.contentLength,audioTrack:f.audioTrack,drm:Boolean(f.drmFamilies?.length)})),
+      formats:responses.flatMap(r=>[...(r.streamingData?.adaptiveFormats||[]),...(r.streamingData?.formats||[])].slice(0,100)).map(f=>({url:f.url,mimeType:f.mimeType,bitrate:f.bitrate,contentLength:f.contentLength,height:f.height,audioTrack:f.audioTrack,drm:Boolean(f.drmFamilies?.length)})),
       tracks:responses.flatMap(r=>(r.captions?.playerCaptionsTracklistRenderer?.captionTracks||[]).slice(0,30)).map(t=>({url:t.baseUrl,language:t.languageCode,kind:t.kind})),
     }:null;
     if(data&&m.captions===true){

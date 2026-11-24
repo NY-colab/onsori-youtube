@@ -1,4 +1,5 @@
 import {MODEL_CONFIG} from './model-config.js';
+import {retryNetwork,modelDownloadError} from './network-retry.js';
 import {dbfs} from './browser-engine-signal.js';
 import {mergeAsrWindows,speechWindows,gridWindows} from './browser-engine-asr.js';
 import {webgpuReady,engineProfiles,maxNewTokens} from './browser-engine-device.js';
@@ -45,7 +46,7 @@ self.onmessage=async ({data})=>{
         const windows=[];if(data.events===false)return windows;
         if(!models.events){
           progress(astBand[0]-.04,'음악·효과음 AST 모델 준비 중');
-          models.events=await pipeline('audio-classification',eventModel.id,{revision:eventModel.revision,dtype:eventModel.dtype,device,progress_callback:reportDownload(astBand[0]-.02,'음향')});
+          models.events=await retryNetwork(()=>pipeline('audio-classification',eventModel.id,{revision:eventModel.revision,dtype:eventModel.dtype,device,progress_callback:reportDownload(astBand[0]-.02,'음향')}),{giveUp:modelDownloadError});
         }
         const events=models.events;
         for(let start=0;start<duration;start+=2){
@@ -70,7 +71,7 @@ self.onmessage=async ({data})=>{
         if(data.asr===false)return {text:'',chunks:[],diagnostics:{method:'speech analyzed by the cloud',windows:0,rejected:[]}};
         if(!models.asr){
           progress(asrBand[0]-.14,gpu?`GPU로 한국어 Whisper 모델 준비 중 (첫 실행은 약 ${MODEL_CONFIG.gpu.downloadMB}MB를 내려받습니다)`:'브라우저에서 한국어 Whisper 모델 준비 중 (첫 실행은 모델을 내려받습니다)');
-          models.asr=await pipeline('automatic-speech-recognition',whisper.id,{revision:whisper.revision,dtype:whisper.dtype,device,progress_callback:reportDownload(asrBand[0]-.12,'대사')});
+          models.asr=await retryNetwork(()=>pipeline('automatic-speech-recognition',whisper.id,{revision:whisper.revision,dtype:whisper.dtype,device,progress_callback:reportDownload(asrBand[0]-.12,'대사')}),{giveUp:modelDownloadError});
         }
         const asr=models.asr;
         progress(asrBand[0],`${where}에서 한국어 대사와 시각 분석 중`);
@@ -104,11 +105,11 @@ self.onmessage=async ({data})=>{
         return;
       }catch(error){
         await release();
-        if(index===profiles.length-1)throw error;
+        if(index===profiles.length-1||error?.network)throw error;
         gpuFallback=String(error?.message||error).slice(0,300);profileIndex=index+1;
         progress(.08,'GPU 가속을 사용할 수 없어 CPU로 처음부터 다시 분석합니다');
       }
     }
-  }catch(error){self.postMessage({type:'error',message:`브라우저 AI 분석 실패: ${error?.message||String(error)}`});}
+  }catch(error){self.postMessage({type:'error',message:error?.network?error.message:`브라우저 AI 분석 실패: ${error?.message||String(error)}`});}
   finally{if(!keep)await release();}
 };

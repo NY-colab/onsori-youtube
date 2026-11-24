@@ -45,7 +45,7 @@ export async function verifyCorrectionKey(apiKey,{client,model=AI_CORRECTION.mod
 
 // Speech recognized on this device or by the OnSori cloud, not yet corrected by any reference.
 export function correctionTargets(doc){
-  return doc.cues.filter(c=>c.kind==='speech'&&!c.speech_correction&&!c.ai_correction&&/whisper|onsori-cloud-speech|youtube-auto-caption/.test(c.source||''));
+  return doc.cues.filter(c=>c.kind==='speech'&&!c.speech_correction&&!c.ai_correction&&/whisper|onsori-cloud-speech|youtube-auto-caption|screen-ocr/.test(c.source||''));
 }
 
 // Guard against invented wording. A text-only check cannot tell a right sound-alike fix from a wrong

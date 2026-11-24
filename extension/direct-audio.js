@@ -13,11 +13,11 @@ export async function lookupAudio(source,{signal,fetcher=fetch,language='ko',ori
   if(!/^[\w-]{11}$/.test(source?.videoId))throw new Error('영상 ID가 올바르지 않습니다.');
   if(!['https://www.youtube.com','https://m.youtube.com'].includes(origin))throw new Error('YouTube 페이지에서만 오디오를 조회할 수 있습니다.');
   // A fresh anonymous visitor context; no browser cookies or account tokens.
-  const watch=await boundedDownload(`${origin}/watch?v=${source.videoId}`,{fetcher,signal:requestSignal(signal),maxBytes:8*1024*1024});
+  const watch=await boundedDownload(`${origin}/watch?v=${source.videoId}`,{fetcher,signal:requestSignal(signal),maxBytes:8*1024*1024,what:'영상 정보를'});
   const html=await watch.text(),visitor=html.match(/"VISITOR_DATA"\s*:\s*"([^"\r\n]{1,2048})"/)?.[1];
   const headers={'Content-Type':'application/json','X-YouTube-Client-Name':'101','X-YouTube-Client-Version':CLIENT.clientVersion};
   if(visitor)headers['X-Goog-Visitor-Id']=visitor;
-  const payload=await boundedDownload(API.replace('https://www.youtube.com',origin),{fetcher,signal:requestSignal(signal),maxBytes:4*1024*1024,request:{method:'POST',headers,body:JSON.stringify({
+  const payload=await boundedDownload(API.replace('https://www.youtube.com',origin),{fetcher,signal:requestSignal(signal),maxBytes:4*1024*1024,what:'영상 정보를',request:{method:'POST',headers,body:JSON.stringify({
     context:{client:CLIENT},videoId:source.videoId,contentCheckOk:true,racyCheckOk:true,
     playbackContext:{contentPlaybackContext:{html5Preference:'HTML5_PREF_WANTS'}}
   })}});

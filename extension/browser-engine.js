@@ -260,7 +260,7 @@ function compatibleBase(base,videoId,duration,language,speechSource='recognition
   if(!base||base.video_id!==videoId||meta?.progressive!==true||meta.audio_analyzed!==true||(meta.speech_language||'ko')!==language||(meta.speech_source||'recognition')!==speechSource||Math.abs(base.duration-duration)>Math.max(2,duration*.01))return null;
   return base;
 }
-export async function analyzeFullStreaming({blob,videoId,title='',expectedDuration,options={},references=[],captions=null,notices=[],cloud=null,correction=null,resume=null,position=null,onChunk,onProgress,signal}={}){
+export async function analyzeFullStreaming({blob,videoId,title='',expectedDuration,options={},references=[],captions=null,screen=null,screenInfo=null,notices=[],cloud=null,correction=null,resume=null,position=null,onChunk,onProgress,signal}={}){
   check(signal);
   onProgress?.({progress:0,message:'브라우저에서 전체 오디오 읽는 중'});
   const pcm=await decode(blob,signal,MODEL_CONFIG.maxFullSeconds);
@@ -268,19 +268,24 @@ export async function analyzeFullStreaming({blob,videoId,title='',expectedDurati
   const duration=round3(pcm.length/SR),language=options.language||'ko',reference=referenceLevel(pcm);
   // With YouTube caption lines the text is known for the whole video: only sound (music, effects,
   // loudness for caption size) is analyzed here and speech recognition is skipped.
+  // Burned-in subtitles read from the picture (screen-reader.js) replace YouTube caption lines and
+  // speech recognition; they are read minute by minute.
   const captionLines=Array.isArray(captions?.lines)?captions.lines.filter(l=>Number.isFinite(l.start)&&Number.isFinite(l.end)&&l.end>l.start&&l.start<duration&&typeof l.text==='string'&&l.text.trim()):[];
-  const speechSource=captionLines.length?(captions.kind==='auto'?'youtube-auto-caption':'youtube-caption-track'):'recognition';
+  const speechSource=screen?'screen-ocr':captionLines.length?(captions.kind==='auto'?'youtube-auto-caption':'youtube-caption-track'):'recognition';
+  const linesGiven=screen!=null||captionLines.length>0,ownedBy=(lines,chunk)=>lines.filter(l=>{const mid=(l.start+l.end)/2;return mid>=chunk.start&&(mid<chunk.end||chunk.end>=duration-.01);});
+  // On-screen lines first; a YouTube caption line fills a moment where no on-screen line was read.
+  const withFill=(read,chunk)=>{const fill=ownedBy(captionLines,chunk).filter(l=>!read.some(r=>Math.min(r.end,l.end)-Math.max(r.start,l.start)>.3)).map(l=>({...l,source:captions.kind==='auto'?'youtube-auto-caption':'youtube-caption-track'}));return [...read,...fill].sort((a,b)=>a.start-b.start);};
   const base=compatibleBase(resume,videoId,duration,language,speechSource);
   let cues=(base?.cues||[]).filter(c=>c.end<=duration+.05),covered=base?coveredRanges(base.metadata.analyzed_ranges,duration):[];
   let meta=base?streamMetadata(base.metadata):null,speechReference=base?.metadata.speech_reference||null,aiRecord=base?.metadata.ai_correction||null;
   const music={...(base?.metadata.music_analysis||{})},warnings=[...(base?.warnings||[])],chunkLog=[...(base?.metadata.stream_chunks||[])].slice(-200),warn=text=>{if(!warnings.includes(text))warnings.push(text);};
   for(const text of Array.isArray(notices)?notices.slice(0,5):[])if(typeof text==='string'&&text)warn(text.slice(0,300));
   const pending=planChunks(pcm,duration,covered);
-  let cloudOn=cloud?.enabled===true&&cloud.speech!==false&&!captionLines.length,correctionOn=correction?.enabled===true;
+  let cloudOn=cloud?.enabled===true&&cloud.speech!==false&&!linesGiven,correctionOn=correction?.enabled===true;
   // Music and effect names from Gemini 4 Hydrogen through the server (consented); once its budget or
   // the daily share is used up, the remaining minutes keep the on-device AST result.
   let soundsOn=cloud?.enabled===true&&cloud.sounds===true&&options.event_detection!==false;
-  const documentNow=complete=>validateDocument({schema_version:'1.0',video_id:videoId,title:String(title||'').slice(0,300),duration,cues,warnings:warnings.slice(0,100),metadata:{...(meta||{}),engine:meta?.engine||'browser',audio_analyzed:true,partial:!complete,progressive:true,analysis_scope:'full-video',analysis_range:[0,duration],analyzed_ranges:covered,reference_dbfs:reference,speech_language:language,speech_source:speechSource,stream_chunk_seconds:STREAM.seconds,stream_chunks:chunkLog,music_analysis:music,...(speechReference?{speech_reference:speechReference}:{}),...(aiRecord?{ai_correction:aiRecord}:{})}});
+  const documentNow=complete=>validateDocument({schema_version:'1.0',video_id:videoId,title:String(title||'').slice(0,300),duration,cues,warnings:warnings.slice(0,100),metadata:{...(meta||{}),...(screenInfo?{screen_subtitles:screenInfo}:{}),engine:meta?.engine||'browser',audio_analyzed:true,partial:!complete,progressive:true,analysis_scope:'full-video',analysis_range:[0,duration],analyzed_ranges:covered,reference_dbfs:reference,speech_language:language,speech_source:speechSource,stream_chunk_seconds:STREAM.seconds,stream_chunks:chunkLog,music_analysis:music,...(speechReference?{speech_reference:speechReference}:{}),...(aiRecord?{ai_correction:aiRecord}:{})}});
   const session=createInferenceSession(),run=(p,o,cb,s,extra={})=>session.run(p,o,cb,s,{...extra,keep:true});
   try{
     while(pending.length){
@@ -293,7 +298,10 @@ export async function analyzeFullStreaming({blob,videoId,title='',expectedDurati
       const fromModel=update=>report(Number.isFinite(update.progress)?(update.progress-.05)/.7:0,update.message||'분석 중');
       // A caption line belongs to the minute holding its midpoint; the slice is widened so the
       // whole line is measured.
-      const last=chunk.end>=duration-.01,owned=captionLines.filter(l=>{const mid=(l.start+l.end)/2;return mid>=chunk.start&&(mid<chunk.end||last);});
+      const last=chunk.end>=duration-.01;
+      if(screen)report(0,'화면 자막 읽는 중');
+      const owned=screen?withFill(await screen.read(chunk.start,chunk.end,fraction=>report(.1*fraction,`화면 자막 읽는 중 ${Math.round(fraction*100)}%`)),chunk):ownedBy(captionLines,chunk);
+      check(signal);
       const from=Math.max(0,Math.min(chunk.start-STREAM.pad,...owned.map(l=>l.start))),to=Math.min(duration,Math.max(chunk.end+STREAM.pad,...owned.map(l=>l.end))),slice=pcm.subarray(Math.round(from*SR),Math.round(to*SR));
       report(0,'소리 분석 시작');
       const speakers=[...new Set(cues.filter(c=>c.kind==='speech'&&c.speaker).map(c=>c.speaker))].slice(-8);
@@ -303,9 +311,9 @@ export async function analyzeFullStreaming({blob,videoId,title='',expectedDurati
         result=await withCloudSpeech(slice,{videoId,title,options,cloud,onProgress:fromModel,signal,run});
         if(result.runtime?.cloud_fallback){cloudOn=false;warn(`${result.runtime.cloud_fallback} 이후 구간의 대사는 이 기기에서 분석했습니다.`);}
         else warn('대사는 온소리 클라우드(외부 AI 업체 DeepInfra)에서 인식했고, 음악·효과음은 이 기기에서 분석했습니다.');
-      }else if(captionLines.length){
+      }else if(linesGiven){
         result=await run(slice,options,fromModel,signal,{asr:false});
-        warn(captions.kind==='auto'?'대사는 YouTube 자동 자막을 가져왔고, 음악·효과음과 글자 크기는 이 기기에서 분석했습니다.':'대사는 영상에 등록된 자막을 가져왔고, 음악·효과음과 글자 크기는 이 기기에서 분석했습니다.');
+        warn(screen?'대사는 영상 화면의 자막을 읽어(OCR) 만들었고, 음악·효과음과 글자 크기는 이 기기에서 분석했습니다.':captions.kind==='auto'?'대사는 YouTube 자동 자막을 가져왔고, 음악·효과음과 글자 크기는 이 기기에서 분석했습니다.':'대사는 영상에 등록된 자막을 가져왔고, 음악·효과음과 글자 크기는 이 기기에서 분석했습니다.');
       }else result=await run(slice,options,fromModel,signal);
       check(signal);
       let cloudSounds=null,cloudSpeakers=null;
@@ -316,8 +324,8 @@ export async function analyzeFullStreaming({blob,videoId,title='',expectedDurati
         else if(SOUND_STOP_CODES.includes(answer.error?.code)){soundsOn=false;warn(`${answer.error.message} 이후 구간의 음악·효과음은 이 기기에서 분석했습니다.`);}
         else warn(`${label} 구간의 음악·효과음은 서버 분석을 받지 못해 이 기기에서 분석했습니다.`);
       }
-      const part=ownChunk(assembleDocument({pcm:slice,asr:captionLines.length?null:result.asr,windows:result.windows,runtime:result.runtime,videoId,title,startTime:from,options,reference,captions:captionLines.length?{kind:captions.kind,lines:owned}:null,cloudSounds,cloudSpeakers}),chunk,duration);
-      if(options.use_caption_references!==false&&!captionLines.length){applyReferences(part,references,'native');const r=part.metadata.speech_reference;speechReference={method:r.method,available:r.available,corrected:(speechReference?.corrected||0)+r.corrected};}
+      const part=ownChunk(assembleDocument({pcm:slice,asr:linesGiven?null:result.asr,windows:result.windows,runtime:result.runtime,videoId,title,startTime:from,options,reference,captions:linesGiven?{kind:screen?'screen':captions.kind,lines:owned}:null,cloudSounds,cloudSpeakers}),chunk,duration);
+      if(options.use_caption_references!==false&&!linesGiven){applyReferences(part,references,'native');const r=part.metadata.speech_reference;speechReference={method:r.method,available:r.available,corrected:(speechReference?.corrected||0)+r.corrected};}
       if(correctionOn){
         const context=cues.filter(c=>c.kind==='speech'&&c.start<chunk.start).slice(-AI_CORRECTION.contextLines).map(c=>c.text);
         const error=await correctSpeech(part,correction,{context,signal,onProgress:message=>report(.97,message)});
@@ -329,7 +337,7 @@ export async function analyzeFullStreaming({blob,videoId,title='',expectedDurati
       const merged=mergeStreamCues(cues,part,chunk,reference);cues=merged.cues;Object.assign(music,merged.music);
       for(const id of Object.keys(music))if(!cues.some(c=>c.id===id))delete music[id];
       covered=coveredRanges([...covered,[chunk.start,chunk.end]],duration);
-      chunkLog.push({start:chunk.start,end:chunk.end,device:result.runtime?.device||null,speech:captionLines.length?speechSource:result.runtime?.speech==='cloud'?'cloud':'device',sounds:cloudSounds?'gemini':'device',...(result.runtime?.gpu_fallback?{gpu_fallback:String(result.runtime.gpu_fallback).slice(0,120)}:{})});
+      chunkLog.push({start:chunk.start,end:chunk.end,device:result.runtime?.device||null,speech:linesGiven?speechSource:result.runtime?.speech==='cloud'?'cloud':'device',sounds:cloudSounds?'gemini':'device',...(result.runtime?.gpu_fallback?{gpu_fallback:String(result.runtime.gpu_fallback).slice(0,120)}:{})});
       const doc=documentNow(!pending.length);
       check(signal);await onChunk?.(doc,{chunk,remaining:pending.length});
       if(!pending.length){onProgress?.({progress:1,message:'영상 전체 자막 분석 완료'});return doc;}

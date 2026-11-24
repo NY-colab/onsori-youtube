@@ -45,10 +45,10 @@ export function assembleDocument({pcm,asr,windows=[],runtime=null,videoId=null,t
   // YouTube caption lines (absolute times) replace speech recognition: their text and timing are
   // kept as given; this device only measures each line's loudness for the caption size.
   if(Array.isArray(captions?.lines)){
-    const source=captions.kind==='auto'?'youtube-auto-caption':'youtube-caption-track';
+    const source=captions.kind==='screen'?'screen-ocr':captions.kind==='auto'?'youtube-auto-caption':'youtube-caption-track';
     for(const line of captions.lines){
       const a=line.start-startTime,b=line.end-startTime;if(b<=0||a>=length)continue;
-      add(a,b,line.text,'speech',{source});
+      add(a,b,line.text,'speech',{source:typeof line.source==='string'?line.source:source});
     }
   }
   if(asr?.text?.trim()&&!Array.isArray(asr.chunks))throw new Error('Whisper가 대사 시각을 반환하지 않았습니다. 분석 결과를 표시하지 않습니다.');

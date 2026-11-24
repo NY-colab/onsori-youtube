@@ -25,7 +25,9 @@ fields = [('확장 이름',listing['name']),('간략한 설명',listing['summary
 fields += [(key+' 권한 사유',value) for key,value in listing['permissions'].items()]
 fields += [('원격 코드 설명 — 원격 코드 없음',listing['remote_code_explanation']),
            ('데이터 처리 설명',listing['data_disclosures']['explanation']),('심사자 테스트 안내',listing['reviewer_instructions'])]
-if listing.get('reviewer_instructions_0_4_2'):
+if listing.get('reviewer_instructions_0_4_3'):
+    fields.append(('추가 안내(500자 칸) — 0.4.3 변경점',listing['reviewer_instructions_0_4_3']))
+elif listing.get('reviewer_instructions_0_4_2'):
     fields.append(('추가 안내(500자 칸) — 0.4.2 변경점',listing['reviewer_instructions_0_4_2']))
 elif listing.get('reviewer_instructions_0_4_1'):
     fields.append(('추가 안내(500자 칸) — 0.4.1 변경점',listing['reviewer_instructions_0_4_1']))

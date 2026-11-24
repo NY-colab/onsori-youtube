@@ -1,3 +1,4 @@
+import {retryNetwork,NETWORK_RETRY_DELAYS} from './network-retry.js';
 export const FULL_LIMITS=Object.freeze({seconds:1200,bytes:100*1024*1024});
 export function mediaUrl(value){
   try{const u=new URL(value);if(u.protocol==='https:'&&u.hostname.endsWith('.googlevideo.com')&&!u.username&&!u.password&&(!u.port||u.port==='443')&&u.pathname==='/videoplayback')return u.href;}catch{}return null;
@@ -13,7 +14,15 @@ export function selectFullSource(data,videoId,language='ko',{allowLookup=false}=
   const formats=(Array.isArray(data.formats)?data.formats:[]).filter(f=>!f.drm&&mediaUrl(f.url)&&/^audio\/(mp4|webm)(;|$)/.test(f.mimeType||'')&&(!f.audioTrack||f.audioTrack.audioIsDefault!==false)&&!(Number(f.contentLength)>FULL_LIMITS.bytes)).sort((a,b)=>Number(b.audioTrack?.audioIsDefault===true)-Number(a.audioTrack?.audioIsDefault===true)||Number(b.mimeType.startsWith('audio/mp4'))-Number(a.mimeType.startsWith('audio/mp4'))||(Number(a.bitrate)||128000)-(Number(b.bitrate)||128000));
   if(!formats.length&&!allowLookup)throw new Error('이 영상에서 분석 가능한 전체 오디오 주소를 찾지 못했습니다.');
   const tracks=(Array.isArray(data.tracks)?data.tracks:[]).filter(t=>captionUrl(t.url,videoId)).sort((a,b)=>Number(b.language===language)-Number(a.language===language)||Number(a.kind==='asr')-Number(b.kind==='asr'));
-  return {videoId,title:String(data.title||'').slice(0,300),duration,url:mediaUrl(formats[0]?.url),mimeType:formats[0]?.mimeType,bytes:Number(formats[0]?.contentLength)||null,track:pickTrack(data.captionRequest,tracks,videoId,language),...(typeof data.captionStatus==='string'?{captionStatus:data.captionStatus.slice(0,40)}:{})};
+  return {videoId,title:String(data.title||'').slice(0,300),duration,url:mediaUrl(formats[0]?.url),mimeType:formats[0]?.mimeType,bytes:Number(formats[0]?.contentLength)||null,video:selectScreenVideo(data.formats),track:pickTrack(data.captionRequest,tracks,videoId,language),...(typeof data.captionStatus==='string'?{captionStatus:data.captionStatus.slice(0,40)}:{})};
+}
+// A small video-only stream for reading burned-in subtitles: the lowest picture of at least
+// 360 lines (else at least 240), H.264 before VP9, never DRM, within the download limit.
+export function selectScreenVideo(formats){
+  const usable=(Array.isArray(formats)?formats:[]).filter(f=>!f.drm&&mediaUrl(f.url)&&/^video\/(mp4|webm)(;|$)/.test(f.mimeType||'')&&Number(f.height)>=240&&!(Number(f.contentLength)>FULL_LIMITS.bytes));
+  const rank=f=>[Number(f.height)>=360?0:1,Number(f.height)>=360?Number(f.height):-Number(f.height),/avc1/.test(f.mimeType)?0:1,Number(f.bitrate)||0];
+  const best=usable.sort((a,b)=>{const x=rank(a),y=rank(b);for(let i=0;i<x.length;i++)if(x[i]!==y[i])return x[i]-y[i];return 0;})[0];
+  return best?{url:mediaUrl(best.url),mimeType:best.mimeType,bytes:Number(best.contentLength)||null,height:Number(best.height)}:null;
 }
 // The player's own caption request carries its pot value and is the only address that
 // returns text; a bare track address answers with an empty body.
@@ -22,7 +31,18 @@ function pickTrack(request,tracks,videoId,language){
   if(url&&new URL(url).searchParams.get('pot')&&(language==='auto'||request.language===language))return {url,kind:request.kind==='asr'?'asr':'standard',language:String(request.language||'').slice(0,20),attested:true};
   return tracks[0]?{url:captionUrl(tracks[0].url,videoId),kind:tracks[0].kind}:null;
 }
-export async function boundedDownload(url,{signal,maxBytes=FULL_LIMITS.bytes,onProgress,fetcher=fetch,request={}}={}){
+// Network drops are retried (network-retry.js); HTTP errors, size limits and cancellation are not.
+// `what` names what was being received, with its object particle, for the final message.
+export async function boundedDownload(url,{signal,maxBytes=FULL_LIMITS.bytes,onProgress,fetcher=fetch,request={},what='영상 소리를',retryDelays=NETWORK_RETRY_DELAYS,sleep}={}){
+  try{
+    return await retryNetwork(()=>downloadOnce(url,{signal,maxBytes,onProgress,fetcher,request}),{signal,delays:retryDelays,sleep,
+      giveUp:()=>new Error(`인터넷 연결이 끊겨 YouTube에서 ${what} 받지 못했습니다. 연결을 확인하고 다시 시도해 주세요.`)});
+  }catch(e){
+    if(e?.name==='TimeoutError')throw new Error(`YouTube 응답이 늦어 ${what} 받지 못했습니다. 잠시 뒤 다시 시도해 주세요.`);
+    throw e;
+  }
+}
+async function downloadOnce(url,{signal,maxBytes,onProgress,fetcher,request}){
   const response=await fetcher(url,{...request,signal,credentials:'omit',redirect:'error',cache:'no-store'});
   if(!response.ok)throw new Error(`오디오를 받을 수 없습니다 (${response.status}). 영상 주소를 다시 확인하거나 다른 방법의 탭 녹음을 이용해 주세요.`);
   const size=Number(response.headers.get('content-length'))||0;if(size>maxBytes){await response.body?.cancel();throw new Error('전체 오디오가 100MB 한도를 넘습니다.');}

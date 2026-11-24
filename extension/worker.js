@@ -5,11 +5,15 @@ import {AI_CORRECTION,API_KEY_PATTERN,MODEL_ID_PATTERN,apiKeyHint,normalizeCorre
 const busyPhases=['requesting','preparing','capturing','uploading','queued','running'];
 const captureMessages=['CLOUD_KEY','CLI_CORRECT','CLOUD_CORRECT','FULL_AUDIO_LOOKUP','PLAYBACK_POSITION','ANALYSIS_CHUNK','CAPTURE_REFERENCES','CAPTURE_LEVEL','CAPTURE_LIMIT','CAPTURE_ANALYZING','ANALYSIS_PROGRESS','ANALYSIS_COMPLETE','CAPTURE_ERROR'];
 let creatingOffscreen,mutation=Promise.resolve(),writes=Promise.resolve(),operationEpoch=0;
-const messageError=e=>/Extension has not been invoked|activeTab permission/i.test(e?.message||'')?'현재 YouTube 영상에서 Chrome 도구 모음의 온소리 아이콘을 직접 눌러 녹음을 연결해 주세요.':e?.message||String(e);
+// A browser network error that still arrives raw ("Failed to fetch") is shown in Korean (2026-11-24).
+const RAW_NETWORK=/^(TypeError: )?(Failed to fetch|NetworkError when attempting to fetch resource\.?|network error|Load failed)$/i;
+const messageError=e=>{const text=typeof e==='string'?e:e?.message||String(e);
+  if(/Extension has not been invoked|activeTab permission/i.test(text))return '현재 YouTube 영상에서 Chrome 도구 모음의 온소리 아이콘을 직접 눌러 녹음을 연결해 주세요.';
+  return RAW_NETWORK.test(text.trim())?'인터넷 연결이 잠시 끊겨 분석을 마치지 못했습니다. 연결을 확인하고 다시 시도해 주세요.':text;};
 const state=async()=>(await chrome.storage.local.get('operation')).operation||{phase:'idle',message:'분석할 YouTube 영상을 선택해 주세요.'};
 const write=task=>{const next=writes.then(task);writes=next.catch(()=>{});return next;};
 async function notify(tabId,payload){try{return await chrome.tabs.sendMessage(tabId,payload);}catch{return null;}}
-function analysisOptions(v={}){return {language:['ko','auto','en'].includes(v.language)?v.language:'ko',event_detection:true,use_caption_references:v.use_caption_references!==false,capture_frames:v.capture_frames===true,music_detail:v.music_detail!==false};}
+function analysisOptions(v={}){return {language:['ko','auto','en'].includes(v.language)?v.language:'ko',event_detection:true,use_caption_references:v.use_caption_references!==false,capture_frames:v.capture_frames===true,read_screen:v.read_screen!==false,music_detail:v.music_detail!==false};}
 async function activeTab(){const [tab]=await chrome.tabs.query({active:true,currentWindow:true});if(!tab?.id||!youtubeId(tab.url))throw new Error('YouTube 영상 페이지에서 열어 주세요. 설치 직후라면 페이지를 새로고침해 주세요.');return tab;}
 async function requestTab(sender={}){if(!sender.tab)return activeTab();const tab=await chrome.tabs.get(sender.tab.id);if(!tab?.id||!youtubeId(tab.url))throw new Error('YouTube 영상 페이지에서 사용해 주세요.');return tab;}
 const toolbarSender=sender=>!sender.tab&&sender.url===chrome.runtime.getURL('popup.html');
@@ -290,7 +294,7 @@ async function handle(message,sender){const handleEpoch=operationEpoch;switch(me
     const result=await notify(op.tabId,{type:'LOOKUP_FULL_AUDIO',captureId:op.captureId,source:{videoId:op.videoId,duration:op.expectedDuration},language:message.language});
     if(handleEpoch!==operationEpoch)return {ok:false,error:'오디오 조회를 취소했습니다.'};
     if(!result?.ok)throw new Error(result?.error||'영상 페이지의 오디오 조회 연결이 끝났습니다. 페이지를 새로고침해 주세요.');
-    const raw=result.source,source=selectFullSource({...raw,formats:[{url:raw?.url,mimeType:raw?.mimeType,contentLength:raw?.bytes}],tracks:raw?.track?[{url:raw.track.url,kind:raw.track.kind}]:[]},op.videoId);
+    const raw=result.source,source=selectFullSource({...raw,formats:[{url:raw?.url,mimeType:raw?.mimeType,contentLength:raw?.bytes},...(raw?.video?[{url:raw.video.url,mimeType:raw.video.mimeType,contentLength:raw.video.bytes,height:raw.video.height}]:[])],tracks:raw?.track?[{url:raw.track.url,kind:raw.track.kind}]:[]},op.videoId);
     if(Math.abs(source.duration-op.expectedDuration)>Math.max(2,op.expectedDuration*.01))throw new Error('조회한 오디오 길이가 영상과 다릅니다.');
     return {ok:true,source:{...source,transport:'youtube-page-visionos'}};
   }
@@ -300,7 +304,7 @@ async function handle(message,sender){const handleEpoch=operationEpoch;switch(me
   case 'CAPTURE_LIMIT':await stopCapture('60초 녹음을 마쳤습니다. 기기에서 분석합니다.');return {ok:true};
   case 'CAPTURE_ANALYZING':case 'ANALYSIS_PROGRESS':{const epoch=operationEpoch,op=await state();if(['capturing','running','uploading'].includes(op.phase)){await setState({...op,phase:'running',progress:Math.max(0,Math.min(.999,Number(message.progress)||0)),message:String(message.message||'기기에서 소리를 분석합니다.').slice(0,1000)},epoch);if(message.type==='CAPTURE_ANALYZING')await notify(op.tabId,{type:'CAPTURE_ACTIVE',active:false});}return {ok:true};}
   case 'ANALYSIS_COMPLETE':{const epoch=operationEpoch,op=await state();await saveDocument(message.document,op.tabId,{completion:op,epoch});return {ok:true};}
-  case 'CAPTURE_ERROR':{const op=await state();if(busyPhases.includes(op.phase)){if(op.tabId&&op.videoId)await rememberAuto(`${op.tabId}:${op.videoId}`,{failed:true,interrupted:false});await setState({...op,phase:'error',message:String(message.error||'기기 내 분석에 실패했습니다. 다시 시도해 주세요.').slice(0,1000)},handleEpoch);await notify(op.tabId,{type:'CAPTURE_ACTIVE',active:false});await notify(op.tabId,{type:'CAPTURE_CLEAR'});}return {ok:true};}
+  case 'CAPTURE_ERROR':{const op=await state();if(busyPhases.includes(op.phase)){if(op.tabId&&op.videoId)await rememberAuto(`${op.tabId}:${op.videoId}`,{failed:true,interrupted:false});await setState({...op,phase:'error',message:messageError(String(message.error||'기기 내 분석에 실패했습니다. 다시 시도해 주세요.')).slice(0,1000)},handleEpoch);await notify(op.tabId,{type:'CAPTURE_ACTIVE',active:false});await notify(op.tabId,{type:'CAPTURE_CLEAR'});}return {ok:true};}
   case 'IMPORT':{await ensureIdle();const tab=await requestTab(sender),doc=validateDocument(message.document);if(doc.video_id!==youtubeId(tab.url))throw new Error('JSON의 영상 ID와 현재 영상이 다릅니다.');await saveDocument(doc,tab.id);return {ok:true};}
   case 'REMOVE_DOCUMENT':{await ensureIdle();const tab=await requestTab(sender),id=youtubeId(tab.url);await write(async()=>{const {captionIndex={}}=await chrome.storage.local.get('captionIndex');delete captionIndex[id];await chrome.storage.local.remove(captionKey(id));await chrome.storage.local.set({captionIndex});});await notify(tab.id,{type:'DOCUMENT_UPDATED',videoId:id});return {ok:true};}
   case 'OPEN_HELP':await chrome.tabs.create({url:chrome.runtime.getURL('help.html')});return {ok:true};
