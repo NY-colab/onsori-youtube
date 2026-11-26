@@ -315,8 +315,19 @@ async function dispatch(message,sender){
   if(sender.tab&&['STOP_CAPTURE','CANCEL'].includes(message.type)){const op=await state();if(sender.tab.id!==op.tabId||youtubeId(sender.tab.url)!==op.videoId)return {ok:false,error:'분석 중인 같은 영상에서 조작해 주세요.'};}
   return handle(message,sender);
 }
+// Web Store installs update themselves, but Chrome checks only every few hours. Ask sooner (at browser start and when a
+// YouTube video opens, at most hourly); Chrome installs the new version when this worker next goes idle, so no analysis
+// is cut off. ZIP (unpacked) installs have no update source and are unaffected.
+const UPDATE_CHECK_MS=60*60*1000;
+async function checkForUpdate(){
+  if(typeof chrome.runtime.requestUpdateCheck!=='function')return;
+  const {lastUpdateCheck=0}=await chrome.storage.local.get('lastUpdateCheck');if(Date.now()-lastUpdateCheck<UPDATE_CHECK_MS)return;
+  await chrome.storage.local.set({lastUpdateCheck:Date.now()});try{await chrome.runtime.requestUpdateCheck();}catch{}
+}
+chrome.runtime.onStartup?.addListener(()=>{void checkForUpdate().catch(()=>{});});
 chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{
   if(message.target==='offscreen')return;
+  if(message.type==='AUTO_START')void checkForUpdate().catch(()=>{});
   // Cancellation/navigation must abort pending getUserMedia and model work promptly.
   // A Claude Code request can take tens of seconds; it must not hold up progress and saves.
   if(['GET_STATE','HEALTH','CANCEL','VIDEO_NAVIGATED','GET_CORRECTION','CLI_STATUS','CLI_TEST','CLI_CORRECT','CLOUD_CORRECT'].includes(message.type)){migrated.then(()=>dispatch(message,sender)).then(sendResponse,e=>sendResponse({ok:false,error:messageError(e)}));return true;}
