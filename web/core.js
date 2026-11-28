@@ -1,9 +1,9 @@
 import {STYLE_DEFAULTS,normalizeCaptionStyle} from './caption-style.js';
-export const DEFAULT_SETTINGS = Object.freeze({typographyVersion:2,autoAnalyze:true,enabled:true,showSpeech:true,showSound:true,showMusic:true,infoLevel:'standard',effectStrength:1,baseSize:14,offset:0,positionX:50,positionY:88,...STYLE_DEFAULTS});
+export const DEFAULT_SETTINGS = Object.freeze({typographyVersion:2,autoAnalyze:true,enabled:true,editMode:false,showSpeech:true,showSound:true,showMusic:true,infoLevel:'standard',effectStrength:1,baseSize:14,offset:0,positionX:50,positionY:88,...STYLE_DEFAULTS});
 export const KIND_NAMES = Object.freeze({speech:'대사',sound:'효과음',music:'음악'});
 export function normalizeSettings(value={}) {
   const s={...DEFAULT_SETTINGS,...normalizeCaptionStyle(value)};
-  for(const key of ['autoAnalyze','enabled','showSpeech','showSound','showMusic']) if(typeof value[key]==='boolean') s[key]=value[key];
+  for(const key of ['autoAnalyze','enabled','editMode','showSpeech','showSound','showMusic']) if(typeof value[key]==='boolean') s[key]=value[key];
   if(['simple','standard','rich'].includes(value.infoLevel)) s.infoLevel=value.infoLevel;
   if([0,.5,1,1.5,2].includes(Number(value.effectStrength))) s.effectStrength=Number(value.effectStrength);
   // Migrate stored pre-v2 preferences exactly once, including custom sizes.
@@ -55,6 +55,10 @@ export function validateDocument(input){
       const r=c.ai_correction;
       if(!r||typeof r!=='object'||Array.isArray(r)||typeof r.model!=='string'||!/^[A-Za-z0-9._\/-]{1,100}$/.test(r.model))fail('AI 보정 기록이 올바르지 않습니다.');
       cue.ai_correction={original_text:string(r.original_text,'보정 전 대사',2000),model:r.model};
+    }
+    if(c.user_edit!=null){
+      if(!c.user_edit||typeof c.user_edit!=='object'||Array.isArray(c.user_edit))fail('직접 고친 자막 기록이 올바르지 않습니다.');
+      cue.user_edit={original_text:string(c.user_edit.original_text,'고치기 전 자막',2000)};
     }
     if(c.words!=null){if(!Array.isArray(c.words)||c.words.length>1000) fail('단어 정보가 너무 많습니다.');cue.words=c.words.map(w=>{const ws=number(w.start,'단어 시작',Math.max(0,start-.05),Math.min(86400,end+.05)),we=number(w.end,'단어 종료',Math.max(0,start-.05),Math.min(86400,end+.05));if(we<=ws)fail('단어 시간 범위가 올바르지 않습니다.');return {start:ws,end:we,text:string(w.text,'단어',500)};});}
     return cue;
@@ -136,6 +140,43 @@ export const SPEAKER_MARK='/ ';
 export const speakerMark=(doc,cue)=>cue.kind==='speech'&&speakerTurns(doc).has(cue.id)?SPEAKER_MARK:'';
 // Captions of one video are stored under their own key, so a save never rewrites other videos.
 export const captionKey=videoId=>`cc:${videoId}`;
+// Captions the viewer corrected by hand live under their own key (ed:<videoId>), apart from the
+// analysis result, so re-analysis or new chunks never overwrite them. Each edit remembers the cue's
+// original text and time; it applies to the cue with the same id, or, after re-analysis renamed the
+// cues, to the cue of the same kind with the same original text starting within two seconds.
+export const editKey=videoId=>`ed:${videoId}`;
+export const MAX_EDITS=2000,MAX_EDIT_TEXT=500;
+function editMatches(edit,cue){return edit.kind===cue.kind&&((edit.id===cue.id&&Math.abs(edit.start-cue.start)<=.05)||(edit.orig===(cue.user_edit?.original_text??cue.text)&&Math.abs(edit.start-cue.start)<=2));}
+const editList=(store,videoId)=>store&&store.video_id===videoId&&Array.isArray(store.edits)?store.edits:[];
+export function applyEdits(doc,store){
+  const edits=editList(store,doc?.video_id);if(!doc||!edits.length)return doc;
+  const used=new Set(),cues=[];let changed=0;
+  for(const cue of doc.cues){
+    const edit=edits.find(e=>!used.has(e)&&editMatches(e,cue));if(!edit){cues.push(cue);continue;}
+    used.add(edit);changed++;if(edit.deleted)continue;
+    const {words,...rest}=cue;cues.push({...rest,text:edit.text,user_edit:{original_text:edit.orig},review_required:false});
+  }
+  return changed?{...doc,cues}:doc;
+}
+export const editCount=(store,videoId)=>editList(store,videoId).length;
+// change: {text} to replace, {deleted:true} to hide, {restore:true} to go back to the analysis text.
+export function upsertEdit(store,videoId,cue,change={}){
+  const orig=cue.user_edit?.original_text??cue.text,base={id:cue.id,kind:cue.kind,start:cue.start,end:cue.end,orig};
+  const edits=editList(store,videoId).filter(e=>!editMatches(e,{...cue,user_edit:{original_text:orig}}));
+  const text=String(change.text??'').replace(/[\r\n\t]+/g,' ').replace(/\s{2,}/g,' ').trim().slice(0,MAX_EDIT_TEXT);
+  if(!change.restore){
+    if(change.deleted||!text)edits.push({...base,deleted:true,updatedAt:Date.now()});
+    else if(text!==orig)edits.push({...base,text,updatedAt:Date.now()});
+  }
+  if(edits.length>MAX_EDITS)fail(`직접 고친 자막은 영상마다 ${MAX_EDITS}개까지 저장합니다.`);
+  return {video_id:videoId,edits};
+}
+// Hand edits are shown without waiting for re-analysis; the cue closest before time when none is on screen.
+export function editableCues(doc,time,settings=DEFAULT_SETTINGS){
+  const visible=activeCues(doc,time,settings);if(visible.length||!doc)return visible;
+  const shown=doc.cues.filter(c=>settings[{speech:'showSpeech',sound:'showSound',music:'showMusic'}[c.kind]]);
+  const at=time-Number(settings.offset||0),before=shown.filter(c=>c.start<=at).pop();return before?[before]:shown.slice(0,1);
+}
 export function readyDocument(entry,operation={},videoId){
   if(!entry?.ready||entry.displayVersion!==2||entry.document?.video_id!==videoId)return null;
   const meta=entry.document.metadata||{};

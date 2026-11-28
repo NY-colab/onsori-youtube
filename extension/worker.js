@@ -1,5 +1,5 @@
 import {selectFullSource} from './full-source.js';
-import {normalizeSettings,validateDocument,youtubeId,readyDocument,captionKey} from './core.js';
+import {normalizeSettings,validateDocument,youtubeId,readyDocument,captionKey,editKey} from './core.js';
 import {CLOUD} from './cloud-config.js';
 import {AI_CORRECTION,API_KEY_PATTERN,MODEL_ID_PATTERN,apiKeyHint,normalizeCorrection,effectiveCorrection,correctionPayload,serverCorrectionLabel,BRIDGE_HOST,PROVIDERS} from './ai-config.js';
 const busyPhases=['requesting','preparing','capturing','uploading','queued','running'];
@@ -306,7 +306,7 @@ async function handle(message,sender){const handleEpoch=operationEpoch;switch(me
   case 'ANALYSIS_COMPLETE':{const epoch=operationEpoch,op=await state();await saveDocument(message.document,op.tabId,{completion:op,epoch});return {ok:true};}
   case 'CAPTURE_ERROR':{const op=await state();if(busyPhases.includes(op.phase)){if(op.tabId&&op.videoId)await rememberAuto(`${op.tabId}:${op.videoId}`,{failed:true,interrupted:false});await setState({...op,phase:'error',message:messageError(String(message.error||'기기 내 분석에 실패했습니다. 다시 시도해 주세요.')).slice(0,1000)},handleEpoch);await notify(op.tabId,{type:'CAPTURE_ACTIVE',active:false});await notify(op.tabId,{type:'CAPTURE_CLEAR'});}return {ok:true};}
   case 'IMPORT':{await ensureIdle();const tab=await requestTab(sender),doc=validateDocument(message.document);if(doc.video_id!==youtubeId(tab.url))throw new Error('JSON의 영상 ID와 현재 영상이 다릅니다.');await saveDocument(doc,tab.id);return {ok:true};}
-  case 'REMOVE_DOCUMENT':{await ensureIdle();const tab=await requestTab(sender),id=youtubeId(tab.url);await write(async()=>{const {captionIndex={}}=await chrome.storage.local.get('captionIndex');delete captionIndex[id];await chrome.storage.local.remove(captionKey(id));await chrome.storage.local.set({captionIndex});});await notify(tab.id,{type:'DOCUMENT_UPDATED',videoId:id});return {ok:true};}
+  case 'REMOVE_DOCUMENT':{await ensureIdle();const tab=await requestTab(sender),id=youtubeId(tab.url);await write(async()=>{const {captionIndex={}}=await chrome.storage.local.get('captionIndex');delete captionIndex[id];await chrome.storage.local.remove([captionKey(id),editKey(id)]);await chrome.storage.local.set({captionIndex});});await notify(tab.id,{type:'DOCUMENT_UPDATED',videoId:id});return {ok:true};}
   case 'OPEN_HELP':await chrome.tabs.create({url:chrome.runtime.getURL('help.html')});return {ok:true};
   default:return {ok:false,error:'알 수 없는 요청입니다.'};
 }}
