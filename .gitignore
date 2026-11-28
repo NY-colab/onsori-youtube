@@ -11,3 +11,4 @@ tools/
 OnSori.exe
 *.log
 verification/browser-profile/
+native-host/work/

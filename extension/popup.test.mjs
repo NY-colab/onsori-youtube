@@ -6,15 +6,15 @@ import * as core from './core.js';
 import * as captionStyle from './caption-style.js';
 import * as connection from './connection.js';
 const html=await readFile(new URL('./popup.html',import.meta.url),'utf8');
-const source=(await readFile(new URL('./controls.js',import.meta.url),'utf8')).replace(/^import \{[^}]+\} from '\.\/core\.js';\n/m,'const {normalizeSettings,parseDocument,subtitleFile}=core;\n').replace(/^import \{([^}]+)\} from '\.\/caption-style\.js';\n/m,'const {$1}=captionStyle;\n').replace(/^import \{([^}]+)\} from '\.\/connection\.js';\n/m,'const {$1}=connection;\n').replace(/^export function /gm,'function ')+'\nmountControls(document,{embedded:embeddedTest});';
+const source=(await readFile(new URL('./controls.js',import.meta.url),'utf8')).replace(/^import \{([^}]+)\} from '\.\/core\.js';\n/m,'const {$1}=core;\n').replace(/^import \{([^}]+)\} from '\.\/caption-style\.js';\n/m,'const {$1}=captionStyle;\n').replace(/^import \{([^}]+)\} from '\.\/connection\.js';\n/m,'const {$1}=connection;\n').replace(/^export function /gm,'function ')+'\nmountControls(document,{embedded:embeddedTest});';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function harness(config={}){
   const elements=new Map(),messages=[];
   for(const match of html.matchAll(/<([a-z]+)\b([^>]*\bid="([^"]+)"[^>]*)>/g)){const [,tag,attrs,id]=match;elements.set(id,{id,tag,type:attrs.match(/type="([^"]+)"/)?.[1]||'',value:attrs.match(/value="([^"]+)"/)?.[1]||'',checked:/\bchecked\b/.test(attrs),hidden:/\bhidden\b/.test(attrs),disabled:false,textContent:'',title:'',style:{setProperty(name,value){this[name]=value;}},dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;},focus(){},listeners:{},addEventListener(type,fn){this.listeners[type]=fn;},click(){return this.listeners.click?.();}});}
-  const state={ok:true,videoId:'abcdefghijk',tabId:7,title:'영상 - YouTube',document:null,hasStoredDocument:false,awaitingAnalysis:false,settings:core.DEFAULT_SETTINGS,analysisOptions:{language:'ko',capture_frames:false,music_detail:true},localEnabled:Boolean(config.enabled),cloud:config.cloud||{offered:false,consent:null},operation:{phase:'idle'}};
+  const state={ok:true,correction:config.correction||{enabled:false,hasKey:false,model:'claude-haiku-5-5',label:'Claude Haiku 5.5'},videoId:'abcdefghijk',tabId:7,title:'영상 - YouTube',document:null,hasStoredDocument:false,awaitingAnalysis:false,settings:core.DEFAULT_SETTINGS,analysisOptions:{language:'ko',capture_frames:false,music_detail:true},localEnabled:Boolean(config.enabled),cloud:config.cloud||{offered:false,consent:null},operation:{phase:'idle'}};
   let storageListener;const rootListeners={};
   const window={addEventListener(){}};window.parent=config.embedded?{postMessage(){}}:window;
-  const chrome={runtime:{async sendMessage(m){messages.push(structuredClone(m));if(m.type==='GET_STATE')return structuredClone(state);if(m.type==='HEALTH')return {ok:true,health:{message:'기기 내 분석'}};if(m.type==='ENABLE_LOCAL')state.localEnabled=true;if(m.type==='SET_CLOUD_CONSENT')state.cloud={...state.cloud,consent:m.choice};return {ok:true};}},storage:{onChanged:{addListener(fn){storageListener=fn;}}}};
+  const chrome={runtime:{async sendMessage(m){messages.push(structuredClone(m));if(m.type==='GET_STATE')return structuredClone(state);if(m.type==='HEALTH')return {ok:true,health:{message:'기기 내 분석'}};if(m.type==='ENABLE_LOCAL')state.localEnabled=true;if(m.type==='SET_CLOUD_CONSENT')state.cloud={...state.cloud,consent:m.choice};if(m.type==='SET_CORRECTION'){state.correction={...state.correction,enabled:m.enabled};return {ok:true,correction:state.correction};}return {ok:true};}},storage:{onChanged:{addListener(fn){storageListener=fn;}}}};
   const document={getElementById(id){assert.ok(elements.has(id),'unknown element '+id);return elements.get(id);},addEventListener(type,fn){rootListeners[type]=fn;},documentElement:{dataset:{}},head:{append(){}},fonts:{load:async()=>[]},querySelectorAll:()=>[],createElement:()=>({dataset:{},addEventListener(){}}),body:{getBoundingClientRect:()=>({height:700})},activeElement:null};
   vm.runInNewContext(source,{embeddedTest:Boolean(config.embedded),core,captionStyle,connection,chrome,document,window,location:{search:config.embedded?'?view=panel&parent=https%3A%2F%2Fwww.youtube.com':''},URLSearchParams,URL,Blob,ResizeObserver:class{observe(){}},requestAnimationFrame:()=>1,cancelAnimationFrame(){},setInterval(){},setTimeout(fn){fn();return 1;},clearTimeout(){},Date,Number,Math,console});await tick();await tick();
   return {elements,messages,state,rootListeners,async click(id){await elements.get(id).click();await tick();},async progress(op){state.operation=op;storageListener({operation:{newValue:op}},'local');await tick();},async change(id){await elements.get(id).listeners.change?.();await tick();}};
@@ -108,4 +108,32 @@ test('cloud speech consent appears once, after local setup, only when the server
   const declined=await harness({enabled:true,cloud:{offered:true,consent:null}});await declined.click('cloudDecline');
   assert.equal(declined.messages.find(m=>m.type==='SET_CLOUD_CONSENT').choice,'declined');assert.equal(declined.elements.get('cloudConsent').hidden,true);
   assert.match(html,/DeepInfra/);assert.match(html,/24시간 뒤 지웁니다/);
+});
+
+test('Claude Haiku correction is on by itself where Claude Code is connected; the key is never typed in the panel',async()=>{
+  const off=await harness();assert.equal(off.elements.get('aiCorrection').hidden,true);
+  const missing=await harness({enabled:true,embedded:true,correction:{enabled:false,provider:'cli',ready:false,auto:true,hasKey:false,model:'claude-haiku-5-5',label:'Claude Haiku 5.5'}});
+  assert.equal(missing.elements.get('aiCorrection').hidden,false);assert.equal(missing.elements.get('aiCorrectionEnabled').checked,false);
+  assert.equal(missing.elements.get('aiCorrectionSettings').textContent,'연결 방법');assert.match(missing.elements.get("aiCorrectionState").textContent,/연결하지 못해 지금은 보정하지 않습니다/);
+  assert.doesNotMatch(html,/type="password"/);
+  missing.elements.get('aiCorrectionEnabled').checked=true;await missing.elements.get('aiCorrectionEnabled').listeners.change({target:missing.elements.get('aiCorrectionEnabled'),isTrusted:true});await tick();
+  assert.equal(missing.elements.get('aiCorrectionEnabled').checked,false);assert.ok(missing.messages.some(m=>m.type==='OPEN_AI_SETTINGS'));assert.equal(missing.messages.some(m=>m.type==='SET_CORRECTION'),false);
+  const auto=await harness({enabled:true,correction:{enabled:true,provider:'cli',ready:true,auto:true,hasKey:false,model:'claude-haiku-5-5',label:'Claude Haiku 5.5'}});
+  assert.equal(auto.elements.get('aiCorrectionEnabled').checked,true);assert.equal(auto.elements.get('aiCorrectionSettings').textContent,'설정');assert.match(auto.elements.get('aiCorrectionState').textContent,/이 PC의 Claude Code로 자동 보정합니다.*소리는 보내지 않습니다/);
+  auto.elements.get('aiCorrectionEnabled').checked=false;await auto.elements.get('aiCorrectionEnabled').listeners.change({target:auto.elements.get('aiCorrectionEnabled')});await tick();
+  assert.equal(auto.messages.find(m=>m.type==='SET_CORRECTION').enabled,false);assert.equal(auto.elements.get('aiCorrectionEnabled').checked,false);assert.match(auto.elements.get('aiCorrectionState').textContent,/꺼짐/);
+  await auto.click('aiCorrectionSettings');assert.ok(auto.messages.some(m=>m.type==='OPEN_AI_SETTINGS'));
+});
+test('a partly analyzed video shows how far captions are ready and offers to continue',async()=>{
+  const document={schema_version:'1.0',video_id:'abcdefghijk',title:'영상',duration:300,cues:[],warnings:[],metadata:{progressive:true,partial:true,audio_analyzed:true,analyzed_ranges:[[0,60],[120,180]]}};
+  const h=await harness({enabled:true});h.state.document=document;h.state.hasStoredDocument=true;await h.progress({phase:'cancelled',videoId:'abcdefghijk',tabId:7});
+  assert.equal(h.elements.get('documentStatus').textContent,'0개 자막 · 02:00 / 05:00 분석됨');assert.equal(h.elements.get('capture').textContent,'남은 구간 이어서 분석');
+  h.state.document={...document,metadata:{...document.metadata,partial:false,analyzed_ranges:[[0,300]]}};await h.progress({phase:'done',videoId:'abcdefghijk',tabId:7});
+  assert.equal(h.elements.get('capture').textContent,'영상 전체 자막 만들기');assert.match(h.elements.get('documentStatus').textContent,/영상에 연결됨/);
+});
+test('the panel names the OnSori server and the provider and model it corrects with',async()=>{
+  const h=await harness({enabled:true,correction:{enabled:true,provider:'cloud',ready:true,auto:true,hasKey:false,model:'deepseek-ai/DeepSeek-V4-Flash-0731',label:'DeepInfra · DeepSeek V4 Flash'}});
+  assert.equal(h.elements.get('aiCorrectionEnabled').checked,true);assert.match(h.elements.get('aiCorrectionState').textContent,/온소리 서버를 거쳐 자동 보정합니다\(DeepInfra · DeepSeek V4 Flash\)\. 인식한 대사 글자만 보내고 소리는 보내지 않습니다/);
+  const unnamed=await harness({enabled:true,correction:{enabled:true,provider:'cloud',ready:true,auto:true,hasKey:false,model:null}});
+  assert.match(unnamed.elements.get('aiCorrectionState').textContent,/온소리 서버를 거쳐 자동 보정합니다\(AI 모델\)/);
 });

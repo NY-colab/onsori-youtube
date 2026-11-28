@@ -19,6 +19,10 @@ const entries=[
 ];
 for(const [source,destination] of entries){await fs.mkdir(path.dirname(path.join(vendor,destination)),{recursive:true});await fs.copyFile(path.join(modules,source),path.join(vendor,destination));}
 await build({entryPoints:[path.join(modules,'tesseract.js/src/index.js')],outfile:path.join(vendor,'tesseract/tesseract.esm.min.js'),bundle:true,platform:'browser',format:'esm',minify:true,legalComments:'inline',plugins:[{name:'immediate-cancellation',setup(builder){builder.onLoad({filter:/tesseract\.js[\\/]src[\\/]worker[\\/]browser[\\/]spawnWorker\.js$/},async()=>({contents:await fs.readFile(path.join(root,'browser-build/tesseract-spawn-worker.cjs'),'utf8'),loader:'js'}));}}]});
+// Anthropic TypeScript SDK for the optional Claude Haiku caption correction. It is bundled
+// from the lockfile-pinned package and loaded only by extension pages that use it.
+await build({entryPoints:[path.join(modules,'@anthropic-ai/sdk/index.mjs')],outfile:path.join(vendor,'anthropic/anthropic-sdk.mjs'),bundle:true,platform:'browser',format:'esm',target:'chrome116',minify:true,legalComments:'inline'});
+entries.push(['@anthropic-ai/sdk/index.mjs','anthropic/anthropic-sdk.mjs']);
 // Include licenses of every installed production package in the pinned tree.
 // Some build-only platform packages are intentionally included as an overinclusive notice.
 const notices=['OnSori bundled browser runtimes\n\nJavaScript and WebAssembly run from the extension package. Only pinned model data is downloaded.\n'];
@@ -30,6 +34,7 @@ async function walk(dir){for(const entry of await fs.readdir(dir,{withFileTypes:
 }}
 await walk(modules);
 notices.push('\nMODEL DATA (not bundled):\nWhisper base: onnx-community/whisper-base@1846881b6b3a3024392c1eea3ad983695bc23925; upstream OpenAI whisper-base model card Apache-2.0, https://huggingface.co/openai/whisper-base\nAST: Xenova/ast-finetuned-audioset-10-10-0.4593@249a1fbf0286b40e7f1ed687a8ae396997bf7dc6; upstream MIT/ast-finetuned-audioset-10-10-0.4593 model card BSD-3-Clause, https://huggingface.co/MIT/ast-finetuned-audioset-10-10-0.4593\nTesseract tessdata_fast kor+eng@87416418657359cb625c412a48b6e1d6d41c29bd, Apache-2.0; https://github.com/tesseract-ocr/tessdata_fast\n');
+notices.push('Claude Haiku caption correction (optional): no model data is downloaded; recognized caption text is sent to the Anthropic API with the user\'s own API key.\n');
 await fs.writeFile(path.join(vendor,'THIRD-PARTY-NOTICES.txt'),notices.join(''),'utf8');
 const manifest={generated_by:'node scripts/build_browser.mjs',lockfile_sha256:createHash('sha256').update(await fs.readFile(path.join(root,'browser-build/package-lock.json'))).digest('hex'),files:[]};
 manifest.tesseract_adapter_sha256=createHash('sha256').update(await fs.readFile(path.join(root,'browser-build/tesseract-spawn-worker.cjs'))).digest('hex');

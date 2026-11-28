@@ -34,12 +34,22 @@ export function selectMusicTags(scores){
   return {instruments,genre:one(GENRES,.28,.08),mood:one(MOODS,.3,.1),vocal:one(VOCALS,.3,.08),rhythm:null,source:'AST/AudioSet (heuristic scores, not calibrated probabilities)'};
 }
 function describeMusic(tags){const parts=[];if(tags.mood)parts.push(`${tags.mood.text} 음악`);if(tags.instruments.length)parts.push(`${tags.instruments.map(x=>x.text).join('·')} 연주`);if(tags.genre)parts.push(`${tags.genre.text}풍`);if(tags.vocal)parts.push(`${tags.vocal.text} 함께 들림`);return soundNotation('music',parts.join(' · ')||'배경 음악이 이어짐');}
-export function assembleDocument({pcm,asr,windows=[],runtime=null,videoId=null,title='',startTime=0,options={}}){
+// A fixed reference (the whole video's median level) keeps caption sizes comparable across streamed minutes.
+export function assembleDocument({pcm,asr,windows=[],runtime=null,videoId=null,title='',startTime=0,options={},reference:fixedReference=null,captions=null,cloudSounds=null,cloudSpeakers=null}){
   const device=runtime?.device==='webgpu'?'webgpu':'wasm',speechSource=runtime?.speech==='cloud'?'onsori-cloud-speech':`whisper-browser-${device}`;
-  const length=pcm.length/SR,reference=referenceLevel(pcm),cues=[],music_analysis={},rejectedSpeech=[],keptSpeech=[],retimedSpeech=[];let counter=0;
+  const length=pcm.length/SR,reference=Number.isFinite(fixedReference)?fixedReference:referenceLevel(pcm),cues=[],music_analysis={},rejectedSpeech=[],keptSpeech=[],retimedSpeech=[];let counter=0;
   function add(start,end,text,kind,extra={}){
     start=clamp(start,0,length);end=clamp(end,0,length);if(end-start<.02||!text?.trim())return;
     const cue={id:`browser-${++counter}`,start:round(start+startTime),end:round(end+startTime),text:text.trim().slice(0,2000),kind,...volumeStyle(pcm,start,end,reference),confidence:null,source:kind==='speech'?speechSource:`AST-browser-${device}`,review_required:true,volume_profile:volumeProfile(pcm,start,end,reference,startTime),...extra};cues.push(cue);return cue;
+  }
+  // YouTube caption lines (absolute times) replace speech recognition: their text and timing are
+  // kept as given; this device only measures each line's loudness for the caption size.
+  if(Array.isArray(captions?.lines)){
+    const source=captions.kind==='screen'?'screen-ocr':captions.kind==='auto'?'youtube-auto-caption':'youtube-caption-track';
+    for(const line of captions.lines){
+      const a=line.start-startTime,b=line.end-startTime;if(b<=0||a>=length)continue;
+      add(a,b,line.text,'speech',{source:typeof line.source==='string'?line.source:source});
+    }
   }
   if(asr?.text?.trim()&&!Array.isArray(asr.chunks))throw new Error('Whisper가 대사 시각을 반환하지 않았습니다. 분석 결과를 표시하지 않습니다.');
   for(const chunk of asr?.chunks||[]){
@@ -82,12 +92,33 @@ export function assembleDocument({pcm,asr,windows=[],runtime=null,videoId=null,t
     if(previous){previous.end=event.end;previous.score=Math.max(previous.score,event.score);for(const [label,score] of Object.entries(event.scores))previous.scores[label]=Math.max(previous.scores[label]||0,score);}
     else merged.push({...event,scores:{...event.scores}});
   }
+  // Gemini 4 Hydrogen (server, consented): its music descriptions replace AST music; an AST effect
+  // keeps its own time and loudness but takes Hydrogen's name when Hydrogen heard a sound there.
+  // Hydrogen effects without AST evidence are not shown (it can name sounds that are not there).
+  const cloud=Array.isArray(cloudSounds)?cloudSounds:null;
+  if(cloud)for(const e of cloud.filter(e=>e.kind==='music')){
+    add(e.start-startTime,e.end-startTime,soundNotation('music',e.text),'music',{source:'gemini-4-hydrogen',details:'Gemini 4 Hydrogen 음악 설명 · 시각은 약 1초 단위 추정입니다.'});
+  }
   for(const event of merged){
+    if(cloud&&event.kind==='music')continue;
+    const named=cloud&&event.kind==='sound'?cloud.filter(e=>e.kind==='sound'&&e.start-startTime<event.end+1&&e.end-startTime>event.start-1).sort((a,b)=>Math.abs(a.start-startTime-event.start)-Math.abs(b.start-startTime-event.start))[0]:null;
+    if(named){
+      const bounds=activeBounds(pcm,event.start,event.end);
+      add(...bounds,soundNotation('sound',named.text),'sound',{confidence:clamp(event.score,0,1),source:`AST-browser-${device}+gemini-4-hydrogen`,details:`AI 음향 분류(AST: ${EVENTS[event.label][1]})가 찾은 소리에 Gemini 4 Hydrogen이 붙인 이름입니다. 시각은 혼합 음량으로 보정한 추정입니다.`});
+      continue;
+    }
     const tags=event.kind==='music'?selectMusicTags(event.scores):null;
     const text=tags?(options.music_detail===false?soundNotation('music','배경 음악이 이어짐'):describeMusic(tags)):soundNotation(event.kind,`${EVENTS[event.label][0]} ${EVENTS[event.label][1]}`);
     const bounds=event.kind==='sound'?activeBounds(pcm,event.start,event.end):[event.start,event.end];
     const cue=add(...bounds,text,event.kind,{confidence:clamp(event.score,0,1),details:'AI 음향 분류 추정 · 최대 2초 구간의 혼합 음량으로 시각을 보정하며 실제 발음 시각과 차이가 있습니다.'});
     if(cue&&tags)music_analysis[cue.id]=tags;
+  }
+  // Hydrogen's speaker names (absolute times) go to the speech line they overlap most; they are only
+  // used to mark speaker changes. A line that overlaps no named speech keeps no speaker.
+  if(Array.isArray(cloudSpeakers))for(const cue of cues.filter(c=>c.kind==='speech')){
+    let best=null,overlap=0;
+    for(const e of cloudSpeakers){const o=Math.min(cue.end,e.end)-Math.max(cue.start,e.start);if(o>overlap){overlap=o;best=e;}}
+    if(best&&overlap>=Math.min(.3,(cue.end-cue.start)/2))cue.speaker=best.speaker;
   }
   const doc={schema_version:'1.0',video_id:videoId,title:title.slice(0,300),duration:round(startTime+length),cues:cues.sort((a,b)=>a.start-b.start||a.end-b.end),warnings:['브라우저 AI 추정 결과입니다. 대사·음향 분류와 시각은 검토가 필요합니다.',...(options.event_detection===false?['음악·효과음 분석을 끈 결과입니다.']:[])],metadata:{engine:`browser-${device}`,audio_analyzed:true,partial:false,analysis_range:[startTime,round(startTime+length)],reference_dbfs:reference,music_analysis,models:runtime?{...MODEL_CONFIG,device,whisper:runtime.whisper,events:runtime.events,gpu_fallback:runtime.gpu_fallback??null,speech:runtime.speech==='cloud'?'cloud':'device',cloud_fallback:runtime.cloud_fallback??null}:MODEL_CONFIG,asr_diagnostics:asr?.diagnostics||null,speech_timing:{method:'segments longer than letters/2+2 s are bounded to the last AST Speech>=0.2 run inside them',retimed:retimedSpeech},speech_filter:{method:'all overlapping AST windows Speech/Conversation/Narration <0.05 and music/sound >=0.65, or text of at most 8 letters/digits with Speech <0.2 in every overlapping window; skipped when event detection disabled',rejected:rejectedSpeech,kept_speech_evidence:keptSpeech},volume_profile_method:'100ms RMS; fixed recording median reference; fast attack .85 / slow release .35; display scale is whole-cue RMS',event_timing:'AST non-overlapping windows up to 2 seconds; transient bounds refined by mixed RMS, approximate onset/offset',rhythm_analysis:'not performed; no BPM inferred',speech_language:options.language||'ko'}};return removeAsrMetaTags(doc);
 }

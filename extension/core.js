@@ -1,11 +1,11 @@
 import {STYLE_DEFAULTS,normalizeCaptionStyle} from './caption-style.js';
-export const DEFAULT_SETTINGS = Object.freeze({typographyVersion:2,autoAnalyze:true,enabled:true,showSpeech:true,showSound:true,showMusic:true,infoLevel:'standard',effectStrength:1,baseSize:14,offset:0,positionX:50,positionY:88,...STYLE_DEFAULTS});
+export const DEFAULT_SETTINGS = Object.freeze({typographyVersion:2,autoAnalyze:true,enabled:true,editMode:false,showSpeech:true,showSound:true,showMusic:true,infoLevel:'standard',effectStrength:1,baseSize:14,offset:0,positionX:50,positionY:88,...STYLE_DEFAULTS});
 export const KIND_NAMES = Object.freeze({speech:'대사',sound:'효과음',music:'음악'});
 export function normalizeSettings(value={}) {
   const s={...DEFAULT_SETTINGS,...normalizeCaptionStyle(value)};
-  for(const key of ['autoAnalyze','enabled','showSpeech','showSound','showMusic']) if(typeof value[key]==='boolean') s[key]=value[key];
+  for(const key of ['autoAnalyze','enabled','editMode','showSpeech','showSound','showMusic']) if(typeof value[key]==='boolean') s[key]=value[key];
   if(['simple','standard','rich'].includes(value.infoLevel)) s.infoLevel=value.infoLevel;
-  if([0,.5,1].includes(Number(value.effectStrength))) s.effectStrength=Number(value.effectStrength);
+  if([0,.5,1,1.5,2].includes(Number(value.effectStrength))) s.effectStrength=Number(value.effectStrength);
   // Migrate stored pre-v2 preferences exactly once, including custom sizes.
   if(value.baseSize!=null&&Number.isFinite(Number(value.baseSize))) s.baseSize=Math.min(28,Math.max(8,Number(value.baseSize)*(value.typographyVersion===2?1:.5)));
   if(Number.isFinite(Number(value.offset))) s.offset=Math.min(30,Math.max(-30,Number(value.offset)));
@@ -43,12 +43,22 @@ export function validateDocument(input){
       });
     }
     if(c.details!=null) cue.details=string(c.details,'상세 설명',4000);
+    if(c.speaker!=null&&c.kind==='speech') cue.speaker=string(c.speaker,'발화자',40);
     if(c.speech_correction!=null){
       const r=c.speech_correction;
       if(!r||typeof r!=='object'||!['youtube-human-caption','youtube-native-caption','youtube-screen-ocr'].includes(r.reference_source)||r.reference_video_id!==video_id)fail('대사 교정 출처가 올바르지 않습니다.');
       const reference_start=number(r.reference_start,'참조 시작',0,86400),reference_end=number(r.reference_end,'참조 종료',0,86400);
       if(reference_end<=reference_start||!Array.isArray(r.original_words)||r.original_words.length>1000)fail('대사 교정 기록이 올바르지 않습니다.');
       cue.speech_correction={original_text:string(r.original_text,'교정 전 대사',2000),original_source:string(r.original_source,'교정 전 출처',200),corrected_text:string(r.corrected_text,'교정 대사',2000),reference_source:r.reference_source,reference_video_id:video_id,reference_start,reference_end,similarity:number(r.similarity,'대사 일치도',0,1),word_timing_status:'cleared_after_source_correction',original_words:r.original_words.map(w=>{const start=number(w.start,'원본 단어 시작',0,86400),end=number(w.end,'원본 단어 종료',0,86400);if(end<=start)fail('원본 단어 시각이 올바르지 않습니다.');return {start,end,text:string(w.text,'원본 단어',500)};})};
+    }
+    if(c.ai_correction!=null){
+      const r=c.ai_correction;
+      if(!r||typeof r!=='object'||Array.isArray(r)||typeof r.model!=='string'||!/^[A-Za-z0-9._\/-]{1,100}$/.test(r.model))fail('AI 보정 기록이 올바르지 않습니다.');
+      cue.ai_correction={original_text:string(r.original_text,'보정 전 대사',2000),model:r.model};
+    }
+    if(c.user_edit!=null){
+      if(!c.user_edit||typeof c.user_edit!=='object'||Array.isArray(c.user_edit))fail('직접 고친 자막 기록이 올바르지 않습니다.');
+      cue.user_edit={original_text:string(c.user_edit.original_text,'고치기 전 자막',2000)};
     }
     if(c.words!=null){if(!Array.isArray(c.words)||c.words.length>1000) fail('단어 정보가 너무 많습니다.');cue.words=c.words.map(w=>{const ws=number(w.start,'단어 시작',Math.max(0,start-.05),Math.min(86400,end+.05)),we=number(w.end,'단어 종료',Math.max(0,start-.05),Math.min(86400,end+.05));if(we<=ws)fail('단어 시간 범위가 올바르지 않습니다.');return {start:ws,end:we,text:string(w.text,'단어',500)};});}
     return cue;
@@ -77,16 +87,104 @@ export function trimVolumeProfile(profile,start,end){
   if(points.length>12000)points.splice(12000);
   return [volumePointAt(profile,start),...points,volumePointAt(profile,end)];
 }
-export function captionSize(cue,settings=DEFAULT_SETTINGS){
-  // The analyzer calculates scale from RMS over the entire cue interval.
-  // Keep that value throughout the cue; the 100 ms profile is diagnostic only.
-  const scale=cue.scale??1;
-  return Math.round(settings.baseSize*(1+(scale-1)*settings.effectStrength)*10)/10;
+// Loudness-to-size mapping. Edited videos keep dialogue within a few dB, so the
+// stored analyzer scale (whole-line RMS against the whole-video median, 1 dB = 2.5%)
+// changes most lines by about 1px. Sizes are therefore derived at display time:
+// each cue's loud part (75th percentile of its 100 ms levels) is compared with the
+// video's typical dialogue line. Louder lines grow by LOUDNESS_UP per dB and quieter ones
+// shrink more gently (LOUDNESS_DOWN per dB), so shouting stands out and quiet lines stay readable.
+export const LOUDNESS_UP=1/12,LOUDNESS_DOWN=1/20,LOUDNESS_MIN=.8,LOUDNESS_MAX=1.6;
+const loudnessCache=new WeakMap(),contextCache=new WeakMap();
+// Relative dB (against the analyzer's whole-video reference) of the cue's loud part.
+export function cueLoudness(cue){
+  if(!cue||typeof cue!=='object')return null;
+  if(loudnessCache.has(cue))return loudnessCache.get(cue);
+  let value=Number.isFinite(cue.relative_db)?cue.relative_db:null;
+  const reference=Number.isFinite(cue.dbfs)&&Number.isFinite(cue.relative_db)?cue.dbfs-cue.relative_db:null;
+  const levels=reference===null?[]:(cue.volume_profile||[]).slice(0,-1).map(p=>p.dbfs).filter(v=>Number.isFinite(v)&&v>-60).sort((a,b)=>a-b);
+  if(levels.length>=3)value=levels[Math.floor((levels.length-1)*.75)]-reference;
+  loudnessCache.set(cue,value);return value;
+}
+// The video's typical dialogue loudness (median over speech cues), so ordinary lines
+// stay at the chosen size and only louder or quieter ones grow or shrink.
+export function loudnessContext(doc){
+  const cues=doc?.cues;if(!Array.isArray(cues))return null;
+  const cached=contextCache.get(cues);if(cached&&cached.count===cues.length)return cached;
+  const pick=list=>list.map(cueLoudness).filter(Number.isFinite).sort((a,b)=>a-b);
+  let values=pick(cues.filter(c=>c.kind==='speech'));if(values.length<3)values=pick(cues);
+  const m=values.length>>1,center=!values.length?0:values.length%2?values[m]:(values[m-1]+values[m])/2;
+  const context={count:cues.length,center};contextCache.set(cues,context);return context;
+}
+export function captionSize(cue,settings=DEFAULT_SETTINGS,time,context=null){
+  // One size per cue for its whole interval; sizes do not pulse during a line.
+  const loud=context?cueLoudness(cue):null;
+  const scale=Number.isFinite(loud)?Math.min(LOUDNESS_MAX,Math.max(LOUDNESS_MIN,1+(loud-context.center)*(loud>context.center?LOUDNESS_UP:LOUDNESS_DOWN))):(cue.scale??1);
+  return Math.round(settings.baseSize*Math.max(.7,1+(scale-1)*settings.effectStrength)*10)/10;
+}
+// Speaker change marks (user-specified 2026-11-17, "/" chosen over "-" the same day): a dialogue line
+// spoken by someone other than the previous labelled line starts with "/ ". Speaker names stay internal.
+// Lines without a speaker neither get a mark nor reset the comparison.
+const turnsCache=new WeakMap();
+export function speakerTurns(doc){
+  const cues=doc?.cues;if(!Array.isArray(cues))return new Set();
+  const cached=turnsCache.get(cues);if(cached&&cached.count===cues.length)return cached.ids;
+  const ids=new Set();let last=null;
+  for(const c of cues.filter(c=>c.kind==='speech').sort((a,b)=>a.start-b.start||a.end-b.end)){
+    if(typeof c.speaker!=='string'||!c.speaker)continue;
+    if(last!==null&&c.speaker!==last)ids.add(c.id);
+    last=c.speaker;
+  }
+  turnsCache.set(cues,{count:cues.length,ids});return ids;
+}
+export const SPEAKER_MARK='/ ';
+export const speakerMark=(doc,cue)=>cue.kind==='speech'&&speakerTurns(doc).has(cue.id)?SPEAKER_MARK:'';
+// Captions of one video are stored under their own key, so a save never rewrites other videos.
+export const captionKey=videoId=>`cc:${videoId}`;
+// Captions the viewer corrected by hand live under their own key (ed:<videoId>), apart from the
+// analysis result, so re-analysis or new chunks never overwrite them. Each edit remembers the cue's
+// original text and time; it applies to the cue with the same id, or, after re-analysis renamed the
+// cues, to the cue of the same kind with the same original text starting within two seconds.
+export const editKey=videoId=>`ed:${videoId}`;
+export const MAX_EDITS=2000,MAX_EDIT_TEXT=500;
+function editMatches(edit,cue){return edit.kind===cue.kind&&((edit.id===cue.id&&Math.abs(edit.start-cue.start)<=.05)||(edit.orig===(cue.user_edit?.original_text??cue.text)&&Math.abs(edit.start-cue.start)<=2));}
+const editList=(store,videoId)=>store&&store.video_id===videoId&&Array.isArray(store.edits)?store.edits:[];
+export function applyEdits(doc,store){
+  const edits=editList(store,doc?.video_id);if(!doc||!edits.length)return doc;
+  const used=new Set(),cues=[];let changed=0;
+  for(const cue of doc.cues){
+    const edit=edits.find(e=>!used.has(e)&&editMatches(e,cue));if(!edit){cues.push(cue);continue;}
+    used.add(edit);changed++;if(edit.deleted)continue;
+    const {words,...rest}=cue;cues.push({...rest,text:edit.text,user_edit:{original_text:edit.orig},review_required:false});
+  }
+  return changed?{...doc,cues}:doc;
+}
+export const editCount=(store,videoId)=>editList(store,videoId).length;
+// change: {text} to replace, {deleted:true} to hide, {restore:true} to go back to the analysis text.
+export function upsertEdit(store,videoId,cue,change={}){
+  const orig=cue.user_edit?.original_text??cue.text,base={id:cue.id,kind:cue.kind,start:cue.start,end:cue.end,orig};
+  const edits=editList(store,videoId).filter(e=>!editMatches(e,{...cue,user_edit:{original_text:orig}}));
+  const text=String(change.text??'').replace(/[\r\n\t]+/g,' ').replace(/\s{2,}/g,' ').trim().slice(0,MAX_EDIT_TEXT);
+  if(!change.restore){
+    if(change.deleted||!text)edits.push({...base,deleted:true,updatedAt:Date.now()});
+    else if(text!==orig)edits.push({...base,text,updatedAt:Date.now()});
+  }
+  if(edits.length>MAX_EDITS)fail(`직접 고친 자막은 영상마다 ${MAX_EDITS}개까지 저장합니다.`);
+  return {video_id:videoId,edits};
+}
+// Hand edits are shown without waiting for re-analysis; the cue closest before time when none is on screen.
+export function editableCues(doc,time,settings=DEFAULT_SETTINGS){
+  const visible=activeCues(doc,time,settings);if(visible.length||!doc)return visible;
+  const shown=doc.cues.filter(c=>settings[{speech:'showSpeech',sound:'showSound',music:'showMusic'}[c.kind]]);
+  const at=time-Number(settings.offset||0),before=shown.filter(c=>c.start<=at).pop();return before?[before]:shown.slice(0,1);
 }
 export function readyDocument(entry,operation={},videoId){
   if(!entry?.ready||entry.displayVersion!==2||entry.document?.video_id!==videoId)return null;
-  if(operation.videoId===videoId&&['requesting','preparing','capturing','uploading','queued','running'].includes(operation.phase))return null;
-  if(entry.origin!=='import'&&(entry.document.metadata?.partial===true||entry.document.metadata?.audio_analyzed===false))return null;
+  const meta=entry.document.metadata||{};
+  // Streaming whole-video analysis publishes every finished minute; those captions stay
+  // visible while later minutes are analyzed, after a reload and after an interruption.
+  const progressive=entry.origin==='analysis'&&meta.progressive===true&&meta.audio_analyzed===true;
+  if(!progressive&&operation.videoId===videoId&&['requesting','preparing','capturing','uploading','queued','running'].includes(operation.phase))return null;
+  if(entry.origin!=='import'&&!progressive&&(meta.partial===true||meta.audio_analyzed===false))return null;
   return entry.document;
 }
 // Sound notation (user-specified 가치봄 rule, 2026-11-05): effects ♪…♪, background music ♬…♬.
@@ -107,11 +205,11 @@ export function captionText(cue,level='standard'){
   return level==='rich'&&cue.details&&!legacy?`${base} · ${cue.details}`:base;
 }
 export function clockTime(seconds,decimal=false){const t=Math.max(0,Number(seconds)||0),h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=Math.floor(t%60);return `${h?`${h}:`:''}${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}${decimal?'.'+String(Math.floor((t%1)*1000)).padStart(3,'0'):''}`;}
-export function subtitleFile(doc,format){const d=validateDocument(doc);if(format==='json')return JSON.stringify(d,null,2);if(!['srt','vtt'].includes(format))fail('지원하지 않는 내보내기 형식입니다.');const stamp=s=>{const ms=Math.round(s*1000),h=Math.floor(ms/3600000),m=Math.floor(ms%3600000/60000),sec=Math.floor(ms%60000/1000);return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}${format==='srt'?',':'.'}${String(ms%1000).padStart(3,'0')}`;};
+export function subtitleFile(doc,format){const d=validateDocument(doc),turns=speakerTurns(d);if(format==='json')return JSON.stringify(d,null,2);if(!['srt','vtt'].includes(format))fail('지원하지 않는 내보내기 형식입니다.');const stamp=s=>{const ms=Math.round(s*1000),h=Math.floor(ms/3600000),m=Math.floor(ms%3600000/60000),sec=Math.floor(ms%60000/1000);return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}${format==='srt'?',':'.'}${String(ms%1000).padStart(3,'0')}`;};
   // Conventional subtitle players generally show only one event at a time.
   // Flatten overlap boundaries so dialogue and sound descriptions remain together.
   const points=[...new Set(d.cues.flatMap(c=>[Math.round(c.start*1000)/1000,Math.round(c.end*1000)/1000]))].sort((a,b)=>a-b),intervals=[];
-  for(let i=0;i<points.length-1;i++){const a=points[i],b=points[i+1],active=d.cues.filter(c=>c.start<b-.0001&&c.end>a+.0001).sort((x,y)=>(x.kind!=='speech')-(y.kind!=='speech')||x.start-y.start||x.id.localeCompare(y.id));if(!active.length||b<=a)continue;const text=active.map(c=>(c.kind==='speech'?c.text:soundNotation(c.kind,c.text)).replace(/</g,'‹').replace(/>/g,'›').replace(/\r/g,'').replace(/\n\n/g,'\n')).join('\n');const last=intervals.at(-1);if(last&&last.text===text&&Math.abs(last.end-a)<.001)last.end=b;else intervals.push({start:a,end:b,text});}
+  for(let i=0;i<points.length-1;i++){const a=points[i],b=points[i+1],active=d.cues.filter(c=>c.start<b-.0001&&c.end>a+.0001).sort((x,y)=>(x.kind!=='speech')-(y.kind!=='speech')||x.start-y.start||x.id.localeCompare(y.id));if(!active.length||b<=a)continue;const text=active.map(c=>(c.kind==='speech'?(turns.has(c.id)?SPEAKER_MARK:'')+c.text:soundNotation(c.kind,c.text)).replace(/</g,'‹').replace(/>/g,'›').replace(/\r/g,'').replace(/\n\n/g,'\n')).join('\n');const last=intervals.at(-1);if(last&&last.text===text&&Math.abs(last.end-a)<.001)last.end=b;else intervals.push({start:a,end:b,text});}
   return (format==='vtt'?'WEBVTT\n\n':'')+intervals.map((c,i)=>`${i+1}\n${stamp(c.start)} --> ${stamp(c.end)}\n${c.text}\n`).join('\n')+'\n';
 }
 
@@ -130,8 +228,8 @@ export function fitCaptionBox(box,maxHeight){
 // Reuse caption nodes during playback. Quantization avoids needless layout work;
 // every changed fit starts from desired sizes, never from previously shrunk rows.
 const captionLayouts=new WeakMap();
-export function updateCaptionSizes(box,cues,settings,time,responsiveScale,maxHeight,layoutKey=''){
-  const rows=[...box.children],sizes=cues.map(c=>Math.round(captionSize(c,settings,time)*responsiveScale*2)/2);
+export function updateCaptionSizes(box,cues,settings,time,responsiveScale,maxHeight,layoutKey='',context=null){
+  const rows=[...box.children],sizes=cues.map(c=>Math.round(captionSize(c,settings,time,context)*responsiveScale*2)/2);
   const key=`${layoutKey}|${maxHeight}|${sizes.join(',')}`,previous=captionLayouts.get(box);
   if(previous?.key===key&&rows.length===previous.rows.length&&rows.every((row,i)=>row===previous.rows[i]))return false;
   rows.forEach((row,i)=>{if(sizes[i]!==undefined){row.style.setProperty('font-size',`${sizes[i]}px`,'important');row.style.setProperty('--cue-size',`${sizes[i]}px`);row.style.setProperty('--font-size',`${sizes[i]}px`);}});

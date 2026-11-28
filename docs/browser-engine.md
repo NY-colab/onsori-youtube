@@ -152,7 +152,8 @@ signed-in browser. Model execution is tested under the extension CSP, and the
 network log checks that no remote JS/MJS/WASM or inference POST is requested.
 Fixtures use existing project sample media and are not included in the extension.
 The final inference run copies the full production extension and unchanged
-manifest into the fixture, with its actual permissions and no unlimitedStorage.
+manifest into the fixture, with its actual permissions. From 0.4.0 these include
+unlimitedStorage, used only for per-video caption storage beyond the 10 MB default.
 `ONSORI_CHROMIUM_PATH` optionally selects an installed test Chromium executable;
 otherwise Playwright's `chromium.executablePath()` is used.
 
